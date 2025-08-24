@@ -11,6 +11,10 @@
 		<Platforms>AnyCPU</Platforms>
 		<RestorePackages>true</RestorePackages>
 		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+		<Authors>Masoud Sarafraz</Authors>
+		<PackageProjectUrl>https://github.com/MasoudSarafraz/SQLiteORM.Light.git</PackageProjectUrl>
+		<RepositoryUrl>https://github.com/MasoudSarafraz/SQLiteORM.Light.git</RepositoryUrl>
 	</PropertyGroup>
 	<PropertyGroup Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'">
 		<DebugSymbols>true</DebugSymbols>
