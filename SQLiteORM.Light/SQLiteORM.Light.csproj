@@ -43,9 +43,9 @@
   <ItemGroup>
     <Compile Include="Attributes\IdentityKeyAttribute.cs" />
     <Compile Include="Attributes\IgnoreAttribute.cs" />
-    <Compile Include="Attributes\TableAttribute .cs" />
     <Compile Include="DataBase.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TableAttribute.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>
