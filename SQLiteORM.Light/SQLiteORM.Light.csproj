@@ -3,8 +3,8 @@
 	<PropertyGroup>
 		<TargetFrameworks>net4;net45;netstandard2.0</TargetFrameworks>
 		<PackageId>SQLiteORM.Light</PackageId>
-		<PackageVersion>1.0.2</PackageVersion>
-		<Version>1.0.2</Version>
+		<PackageVersion>1.0.3</PackageVersion>
+		<Version>1.0.3</Version>
 		<Authors>Masoud Sarafraz</Authors>
 		<Title>Lightweight SQLite ORM for .NET</Title>
 		<PackageProjectUrl>https://github.com/MasoudSarafraz/SQLiteORM.Light</PackageProjectUrl>
@@ -13,8 +13,8 @@
 		<PackageTags>sqlite;orm;database;ef6;cross-platform</PackageTags>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-		<AssemblyVersion>1.0.2.0</AssemblyVersion>
-		<FileVersion>1.0.2.0</FileVersion>
+		<AssemblyVersion>1.0.3.0</AssemblyVersion>
+		<FileVersion>1.0.3.0</FileVersion>
 		<Description>a Light Weght ORM For SQLite With CRUD, dynamic queries, stored procedures, attributes, thread-safety, and transaction suppor</Description>
 	</PropertyGroup>
 	<ItemGroup Condition="'$(TargetFramework)' == 'net4'">

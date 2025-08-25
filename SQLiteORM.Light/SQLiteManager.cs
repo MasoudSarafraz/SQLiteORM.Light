@@ -207,7 +207,7 @@ namespace SQLiteORM
                 var oPrimaryKey = GetPrimaryKeyProperty(oProp.DeclaringType);
                 if (!IsNullableType(oProp.PropertyType) && oProp != oPrimaryKey)
                     sColumnDefinition += " NOT NULL";
-                oAlterCommands.Add($"ALTER TABLE [{sTableName}] ADD COLUMN IF NOT EXISTS {sColumnDefinition}");
+                oAlterCommands.Add($"ALTER TABLE [{sTableName}] ADD COLUMN {sColumnDefinition}");
             }
             if (oAlterCommands.Any())
             {
