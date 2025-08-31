@@ -14,7 +14,7 @@ using System.Xml.Linq;
 
 namespace SQLiteORM
 {
-    public static class SQLiteManager
+    public static class SQLiteManager2
     {
         private static string _oDefaultDbPath;
         private const string _DefaultDbFileName = "Database.sqlite";
@@ -40,7 +40,7 @@ namespace SQLiteORM
             public bool AutoCreate { get; set; }
         }
 
-        static SQLiteManager()
+        static SQLiteManager2()
         {
             LoadDatabaseConfig();
         }
@@ -744,7 +744,7 @@ namespace SQLiteORM
         public static bool DeleteAll<T>(Expression<Func<T, bool>> oPredicate, string sDbPath = null) where T : class, new()
         {
             string sTableName = GetCachedTableName<T>();
-            var oConverter = new ExpressionToSqlConverter<T>();
+            var oConverter = new ExpressionToSqlConverter2<T>();
             string sWhereClause = oConverter.Convert(oPredicate);
             string sSql = $"DELETE FROM {sTableName} WHERE {sWhereClause}"; // حذف براکت
 
@@ -786,7 +786,7 @@ namespace SQLiteORM
         public static IEnumerable<T> Find<T>(Expression<Func<T, bool>> oPredicate, string sDbPath = null) where T : class, new()
         {
             string sTableName = GetCachedTableName<T>();
-            var oConverter = new ExpressionToSqlConverter<T>();
+            var oConverter = new ExpressionToSqlConverter2<T>();
             string sWhereClause = oConverter.Convert(oPredicate);
             string sSql = $"SELECT * FROM {sTableName}"; // حذف براکت
 
@@ -851,7 +851,7 @@ namespace SQLiteORM
         public static int Count<T>(Expression<Func<T, bool>> oPredicate, string sDbPath = null) where T : class, new()
         {
             string sTableName = GetCachedTableName<T>();
-            var oConverter = new ExpressionToSqlConverter<T>();
+            var oConverter = new ExpressionToSqlConverter2<T>();
             string sWhereClause = oConverter.Convert(oPredicate);
             string sSql = $"SELECT COUNT(*) FROM {sTableName}"; // حذف براکت
 
@@ -1071,7 +1071,7 @@ namespace SQLiteORM
         #endregion
     }
 
-    public class ExpressionToSqlConverter<T>
+    public class ExpressionToSqlConverter2<T>
     {
         public string Convert(Expression<Func<T, bool>> oExpression)
         {
