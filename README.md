@@ -12,6 +12,7 @@ It gives you strongly-typed LINQ-like queries, automatic schema migration, and b
 | **Auto-Schema** | Tables and missing columns are created automatically at start-up. |
 | **LINQ-style Queries** | Use C# expressions (`x => x.Age > 18`) that are translated to SQL. |
 | **Bulk Operations** | `InsertList`, `UpdateList`, `DeleteList`, `Upsert`. |
+| **Index Managment** | Create all type of index for table by Attributes |
 | **Transaction Safety** | All multi-row operations run inside transactions. |
 | **No Config Needed** | Works out of the box with a local `Database.sqlite` file. |
 | **Configurable** | One line can switch DB path or file name. |
