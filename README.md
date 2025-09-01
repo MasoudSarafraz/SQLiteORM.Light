@@ -31,7 +31,7 @@ public class User
 {
     [IdentityKey]           // or name the property "Id"
     public int UserId       { get; set; }
-
+    Index("IX_Users_Name", IsUnique = true)]
     public string Name      { get; set; }
     public int  Age         { get; set; }
     public DateTime Joined  { get; set; }
@@ -82,7 +82,19 @@ SQLiteManager.UpdateList(users);
 var ids = users.Select(u => u.UserId).ToList();
 SQLiteManager.DeleteList<User>(ids);
 ```
-
+Index Managment
+```csharp
+//get all index for table
+var indexes = SQLiteManager.GetIndexesForTable("Users");
+//check index exists
+bool indexExists = SQLiteManager.IndexExists("IX_Users_Email");
+//remove index by name
+SQLiteManager2.RemoveIndex("IX_Users_Email");
+//remove all index for table
+SQLiteManager.RemoveIndexesForTable("Users");
+//remove index for property you definde before
+SQLiteManager.RemoveIndexesForProperty<User>(u => u.Email);
+```
 🧹 Schema Evolution
 Add a new property to your model.
 Restart the application → the column is added automatically without data loss.
