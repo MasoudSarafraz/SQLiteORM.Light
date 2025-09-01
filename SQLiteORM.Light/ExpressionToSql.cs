@@ -7,7 +7,7 @@ using System.Text;
 
 namespace SQLiteORM
 {
-    public class ExpressionToSql<T>
+    public sealed class ExpressionToSql<T>
     {
         public string Convert(Expression<Func<T, bool>> oExpression)
         {
