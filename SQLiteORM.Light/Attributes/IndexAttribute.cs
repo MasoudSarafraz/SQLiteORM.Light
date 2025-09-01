@@ -12,9 +12,7 @@ namespace SQLiteORM.Attributes
         public bool IsUnique { get; set; }
         public int Order { get; set; }
         public bool AutoCreate { get; set; } = true;
-
         public IndexAttribute() { }
-
         public IndexAttribute(string name, bool isUnique = false, int order = 0, bool autoCreate = true)
         {
             Name = name;
