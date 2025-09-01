@@ -32,7 +32,7 @@ public class User
 {
     [IdentityKey]           // or name the property "Id"
     public int UserId       { get; set; }
-    [Index("IX_Users_Name", IsUnique = true)]
+    [Index("IX_Users_Name", IsUnique = true)]  //add unique index
     public string Name      { get; set; }
     public int  Age         { get; set; }
     public DateTime Joined  { get; set; }
