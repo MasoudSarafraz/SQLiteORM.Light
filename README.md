@@ -12,6 +12,7 @@ It gives you strongly-typed LINQ-like queries, automatic schema migration, and b
 | **Auto-Schema** | Tables and missing columns are created automatically at start-up. |
 | **LINQ-style Queries** | Use C# expressions (`x => x.Age > 18`) that are translated to SQL. |
 | **Bulk Operations** | `InsertList`, `UpdateList`, `DeleteList`, `Upsert`. |
+| **Index Managment** | Create all type of index for table by Attributes |
 | **Transaction Safety** | All multi-row operations run inside transactions. |
 | **No Config Needed** | Works out of the box with a local `Database.sqlite` file. |
 | **Configurable** | One line can switch DB path or file name. |
@@ -31,7 +32,7 @@ public class User
 {
     [IdentityKey]           // or name the property "Id"
     public int UserId       { get; set; }
-
+    [Index("IX_Users_Name", IsUnique = true)]  //add unique index
     public string Name      { get; set; }
     public int  Age         { get; set; }
     public DateTime Joined  { get; set; }
@@ -82,7 +83,19 @@ SQLiteManager.UpdateList(users);
 var ids = users.Select(u => u.UserId).ToList();
 SQLiteManager.DeleteList<User>(ids);
 ```
-
+Index Managment
+```csharp
+//get all index for table
+var indexes = SQLiteManager.GetIndexesForTable("Users");
+//check index exists
+bool indexExists = SQLiteManager.IndexExists("IX_Users_Email");
+//remove index by name
+SQLiteManager2.RemoveIndex("IX_Users_Email");
+//remove all index for table
+SQLiteManager.RemoveIndexesForTable("Users");
+//remove index for property you definde before
+SQLiteManager.RemoveIndexesForProperty<User>(u => u.Email);
+```
 🧹 Schema Evolution
 Add a new property to your model.
 Restart the application → the column is added automatically without data loss.
