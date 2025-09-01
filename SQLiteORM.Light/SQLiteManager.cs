@@ -20,8 +20,8 @@ namespace SQLiteORM
         private const string _DefaultDbFileName = "Database.sqlite";
         private const string _ConfigFileName = "AppConfig.xml";
         private static bool _TablesChecked = false;
-        private static readonly object _configLock = new object();
-        private static readonly object _tableCheckLock = new object();
+        private static readonly object _ConfigLock = new object();
+        private static readonly object _TableCheckLock = new object();
         // کش‌ها برای بهبود عملکرد
         private static readonly ConcurrentDictionary<Type, bool> _TableCheckCache = new ConcurrentDictionary<Type, bool>();
         private static readonly ConcurrentDictionary<Type, PropertyInfo[]> _PropertyCache = new ConcurrentDictionary<Type, PropertyInfo[]>();
@@ -35,29 +35,70 @@ namespace SQLiteORM
             LoadDatabaseConfig();
         }
 
+        //private static void LoadDatabaseConfig()
+        //{
+        //    lock (_configLock)
+        //    {
+        //        try
+        //        {
+        //            string sConfigPath = Path.Combine(
+        //                AppDomain.CurrentDomain.BaseDirectory,
+        //                _ConfigFileName);
+
+        //            if (!File.Exists(sConfigPath))
+        //            {
+        //                CreateDefaultConfig(sConfigPath);
+        //            }
+
+        //            XDocument oDoc = XDocument.Load(sConfigPath);
+        //            string sDatabaseName = oDoc.Root?.Element("DatabaseName")?.Value ?? _DefaultDbFileName;
+        //            string sDatabasePath = oDoc.Root?.Element("DatabasePath")?.Value;
+
+        //            if (string.IsNullOrWhiteSpace(sDatabaseName))
+        //                throw new InvalidOperationException("Database name not specified in config file");
+
+        //            if (string.IsNullOrWhiteSpace(sDatabasePath) || sDatabasePath == "." || sDatabasePath.Equals("default", StringComparison.OrdinalIgnoreCase))
+        //            {
+        //                sDatabasePath = AppDomain.CurrentDomain.BaseDirectory;
+        //            }
+
+        //            _oDefaultDbPath = Path.Combine(sDatabasePath, sDatabaseName);
+        //            EnsureDatabaseFileExists();
+        //            CheckAllTableStructures();
+        //        }
+        //        catch (Exception oEx)
+        //        {
+        //            throw new InvalidOperationException("Failed to load database configuration: " + oEx.Message, oEx);
+        //        }
+        //    }
+        //}
         private static void LoadDatabaseConfig()
         {
-            lock (_configLock)
+            lock (_ConfigLock)
             {
                 try
                 {
-                    string sConfigPath = Path.Combine(
-                        AppDomain.CurrentDomain.BaseDirectory,
-                        _ConfigFileName);
+                    string oDllDirectory = Path.GetDirectoryName(
+                        Assembly.GetExecutingAssembly().Location
+                    ) ?? throw new InvalidOperationException("Unable to determine assembly location");
 
+                    string sConfigPath = Path.Combine(oDllDirectory, _ConfigFileName);
+                    if (!File.Exists(sConfigPath))
+                    {
+                        sConfigPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, _ConfigFileName);
+                    }
                     if (!File.Exists(sConfigPath))
                     {
                         CreateDefaultConfig(sConfigPath);
                     }
-
                     XDocument oDoc = XDocument.Load(sConfigPath);
                     string sDatabaseName = oDoc.Root?.Element("DatabaseName")?.Value ?? _DefaultDbFileName;
                     string sDatabasePath = oDoc.Root?.Element("DatabasePath")?.Value;
-
                     if (string.IsNullOrWhiteSpace(sDatabaseName))
                         throw new InvalidOperationException("Database name not specified in config file");
 
-                    if (string.IsNullOrWhiteSpace(sDatabasePath) || sDatabasePath == "." || sDatabasePath.Equals("default", StringComparison.OrdinalIgnoreCase))
+                    if (string.IsNullOrWhiteSpace(sDatabasePath) || sDatabasePath == "." ||
+                        sDatabasePath.Equals("default", StringComparison.OrdinalIgnoreCase))
                     {
                         sDatabasePath = AppDomain.CurrentDomain.BaseDirectory;
                     }
@@ -73,16 +114,41 @@ namespace SQLiteORM
             }
         }
 
+
+        //private static void CheckAllTableStructures()
+        //{
+        //    if (_TablesChecked) return;
+
+        //    lock (_tableCheckLock)
+        //    {
+        //        if (_TablesChecked) return;
+
+        //        var aModelTypes = AppDomain.CurrentDomain.GetAssemblies()
+        //            .SelectMany(a => a.GetTypes())
+        //            .Where(t => t.GetCustomAttributes(typeof(TableAttribute), false).Length > 0)
+        //            .ToList();
+
+        //        foreach (var oType in aModelTypes)
+        //        {
+        //            CheckTableStructure(oType);
+        //        }
+        //        _TablesChecked = true;
+        //    }
+        //}
         private static void CheckAllTableStructures()
         {
             if (_TablesChecked) return;
 
-            lock (_tableCheckLock)
+            lock (_TableCheckLock)
             {
                 if (_TablesChecked) return;
 
                 var aModelTypes = AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a => a.GetTypes())
+                    .SelectMany(a =>
+                    {
+                        try { return a.GetTypes(); }
+                        catch (ReflectionTypeLoadException oEx) { return oEx.Types.Where(t => t != null); }
+                    })
                     .Where(t => t.GetCustomAttributes(typeof(TableAttribute), false).Length > 0)
                     .ToList();
 
@@ -90,6 +156,7 @@ namespace SQLiteORM
                 {
                     CheckTableStructure(oType);
                 }
+
                 _TablesChecked = true;
             }
         }
@@ -357,9 +424,11 @@ namespace SQLiteORM
         public static void SetDefaultDatabasePath(string sDbFileName, string sDbPath = null)
         {
             if (string.IsNullOrWhiteSpace(sDbFileName))
+            {
                 throw new ArgumentNullException(nameof(sDbFileName));
 
-            lock (_configLock)
+            }
+            lock (_ConfigLock)
             {
                 string sBasePath = sDbPath ?? AppDomain.CurrentDomain.BaseDirectory;
                 _oDefaultDbPath = Path.Combine(sBasePath, sDbFileName);
@@ -370,7 +439,7 @@ namespace SQLiteORM
 
         private static void EnsureDatabaseFileExists()
         {
-            lock (_configLock)
+            lock (_ConfigLock)
             {
                 string sDirectory = Path.GetDirectoryName(_oDefaultDbPath);
                 if (!string.IsNullOrEmpty(sDirectory) && !Directory.Exists(sDirectory))
@@ -735,7 +804,7 @@ namespace SQLiteORM
             string sTableName = GetCachedTableName<T>();
             var oConverter = new ExpressionToSql<T>();
             string sWhereClause = oConverter.Convert(oPredicate);
-            string sSql = $"SELECT * FROM {sTableName}"; 
+            string sSql = $"SELECT * FROM {sTableName}";
             if (!string.IsNullOrEmpty(sWhereClause) && sWhereClause != "1=1")
             {
                 sSql += $" WHERE {sWhereClause}";
@@ -836,8 +905,8 @@ namespace SQLiteORM
                     string sTempTableName = $"{sTableName}_temp";
                     string sCreateTempTableSql = $"CREATE TABLE {sTempTableName} AS SELECT {string.Join(", ", aColumns.Select(c => $"{c}"))} FROM {sTableName}";
                     ExecuteNonQuery(sCreateTempTableSql, sDbPath);
-                    ExecuteNonQuery($"DROP TABLE {sTableName}", sDbPath); 
-                    ExecuteNonQuery($"ALTER TABLE {sTempTableName} RENAME TO {sTableName}", sDbPath); 
+                    ExecuteNonQuery($"DROP TABLE {sTableName}", sDbPath);
+                    ExecuteNonQuery($"ALTER TABLE {sTempTableName} RENAME TO {sTableName}", sDbPath);
                     return true;
                 }
             }
