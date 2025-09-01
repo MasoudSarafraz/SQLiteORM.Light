@@ -5,28 +5,14 @@ using System.Text;
 
 namespace SQLiteORM.Attributes
 {
-    //[AttributeUsage(AttributeTargets.Class)]
-    //public class TableAttribute : Attribute
-    //{
-    //    public string Name { get; }
-
-    //    public TableAttribute(string name)
-    //    {
-    //        Name = name;
-    //    }
-    //}
     [AttributeUsage(AttributeTargets.Class, AllowMultiple = false)]
     public class TableAttribute : Attribute
     {
-        public string Name { get; set; }
-        public string Schema { get; set; }
+        public string Name { get; }
 
-        public TableAttribute() { }
-
-        public TableAttribute(string name, string schema = null)
+        public TableAttribute(string name)
         {
             Name = name;
-            Schema = schema;
         }
     }
 }
