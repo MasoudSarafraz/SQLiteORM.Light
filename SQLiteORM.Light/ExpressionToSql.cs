@@ -1,86 +1,114 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Text;
 
 namespace SQLiteORM
 {
-    public sealed class ExpressionToSql<T>
+    internal sealed class SqlWithParameters
     {
-        public string Convert(Expression<Func<T, bool>> oExpression)
+        public string Sql { get; set; }
+        public Dictionary<string, object> Parameters { get; set; }
+        public SqlWithParameters()
+        {
+            Parameters = new Dictionary<string, object>();
+        }
+    }
+
+    internal sealed class ExpressionToSql<T>
+    {
+        private static readonly ConcurrentDictionary<Expression, SqlWithParameters> _Cache = new ConcurrentDictionary<Expression, SqlWithParameters>();
+        private static readonly ConcurrentDictionary<MemberExpression, Func<object>> _MemberCache = new ConcurrentDictionary<MemberExpression, Func<object>>();
+        private int _ParameterIndex = 0;
+        public SqlWithParameters ConvertToSqlWithParameters(Expression<Func<T, bool>> oExpression)
         {
             if (oExpression == null)
-                return "1=1";
-            return Visit(oExpression.Body);
+                return new SqlWithParameters { Sql = "1=1" };
+            return _Cache.GetOrAdd(oExpression.Body, body =>
+            {
+                _ParameterIndex = 0;
+                var result = new SqlWithParameters();
+                result.Sql = Visit(body, result);
+                return result;
+            });
         }
 
-        private string Visit(Expression oNode)
+        [Obsolete("Use ConvertToSqlWithParameters for better security and performance. This will remove in the next version")]
+        public string Convert(Expression<Func<T, bool>> oExpression)
         {
-            switch (oNode.NodeType)
+            return ConvertToSqlWithParameters(oExpression).Sql;
+        }
+
+        private string Visit(Expression oExpr, SqlWithParameters oResult)
+        {
+            if (oExpr == null) return "NULL";
+            switch (oExpr.NodeType)
             {
                 case ExpressionType.Equal:
-                    return VisitBinary((BinaryExpression)oNode, "=");
+                    return VisitBinary((BinaryExpression)oExpr, "=", oResult);
                 case ExpressionType.NotEqual:
-                    return VisitBinary((BinaryExpression)oNode, "<>");
+                    return VisitBinary((BinaryExpression)oExpr, "<>", oResult);
                 case ExpressionType.GreaterThan:
-                    return VisitBinary((BinaryExpression)oNode, ">");
+                    return VisitBinary((BinaryExpression)oExpr, ">", oResult);
                 case ExpressionType.GreaterThanOrEqual:
-                    return VisitBinary((BinaryExpression)oNode, ">=");
+                    return VisitBinary((BinaryExpression)oExpr, ">=", oResult);
                 case ExpressionType.LessThan:
-                    return VisitBinary((BinaryExpression)oNode, "<");
+                    return VisitBinary((BinaryExpression)oExpr, "<", oResult);
                 case ExpressionType.LessThanOrEqual:
-                    return VisitBinary((BinaryExpression)oNode, "<=");
+                    return VisitBinary((BinaryExpression)oExpr, "<=", oResult);
                 case ExpressionType.AndAlso:
-                    return VisitBinary((BinaryExpression)oNode, "AND");
+                    return VisitBinary((BinaryExpression)oExpr, "AND", oResult);
                 case ExpressionType.OrElse:
-                    return VisitBinary((BinaryExpression)oNode, "OR");
+                    return VisitBinary((BinaryExpression)oExpr, "OR", oResult);
                 case ExpressionType.Add:
                 case ExpressionType.AddChecked:
-                    return VisitBinaryArithmetic(oNode, "+");
+                    return VisitBinaryArithmetic(oExpr, "+", oResult);
                 case ExpressionType.Subtract:
                 case ExpressionType.SubtractChecked:
-                    return VisitBinaryArithmetic(oNode, "-");
+                    return VisitBinaryArithmetic(oExpr, "-", oResult);
                 case ExpressionType.Multiply:
                 case ExpressionType.MultiplyChecked:
-                    return VisitBinaryArithmetic(oNode, "*");
+                    return VisitBinaryArithmetic(oExpr, "*", oResult);
                 case ExpressionType.Divide:
-                    return VisitBinaryArithmetic(oNode, "/");
+                    return VisitBinaryArithmetic(oExpr, "/", oResult);
                 case ExpressionType.Modulo:
-                    return VisitBinaryArithmetic(oNode, "%");
+                    return VisitBinaryArithmetic(oExpr, "%", oResult);
                 case ExpressionType.And:
-                    return VisitBinaryBitwise(oNode, "&");
+                    return VisitBinaryBitwise(oExpr, "&", oResult);
                 case ExpressionType.Or:
-                    return VisitBinaryBitwise(oNode, "|");
+                    return VisitBinaryBitwise(oExpr, "|", oResult);
                 case ExpressionType.ExclusiveOr:
-                    return VisitBinaryBitwise(oNode, "~");
+                    return VisitBinaryBitwise(oExpr, "^", oResult);
                 case ExpressionType.Coalesce:
-                    return VisitCoalesce((BinaryExpression)oNode);
+                    return VisitCoalesce((BinaryExpression)oExpr, oResult);
                 case ExpressionType.MemberAccess:
-                    return VisitMember((MemberExpression)oNode);
+                    return VisitMember((MemberExpression)oExpr, oResult);
                 case ExpressionType.Constant:
-                    return VisitConstant((ConstantExpression)oNode);
+                    return VisitConstant((ConstantExpression)oExpr, oResult);
                 case ExpressionType.Call:
-                    return VisitMethodCall((MethodCallExpression)oNode);
+                    return VisitMethodCall((MethodCallExpression)oExpr, oResult);
                 case ExpressionType.Convert:
-                    return VisitConvert((UnaryExpression)oNode);
+                    return VisitConvert((UnaryExpression)oExpr, oResult);
                 case ExpressionType.Not:
-                    return VisitNot((UnaryExpression)oNode);
+                    return VisitNot((UnaryExpression)oExpr, oResult);
                 case ExpressionType.Negate:
                 case ExpressionType.NegateChecked:
-                    return VisitUnaryMinus((UnaryExpression)oNode);
+                    return VisitUnaryMinus((UnaryExpression)oExpr, oResult);
                 case ExpressionType.Conditional:
-                    return VisitConditional((ConditionalExpression)oNode);
+                    return VisitConditional((ConditionalExpression)oExpr, oResult);
                 default:
-                    throw new NotSupportedException($"Expression type '{oNode.NodeType}' is not supported");
+                    throw new NotSupportedException($"Expression type '{oExpr.NodeType}' is not supported.");
             }
         }
 
-        private string VisitBinary(BinaryExpression oNode, string oOperatorStr)
+        private string VisitBinary(BinaryExpression oNode, string oOperatorStr, SqlWithParameters oResult)
         {
-            string oLeft = Visit(oNode.Left);
-            string oRight = Visit(oNode.Right);
+            string oLeft = Visit(oNode.Left, oResult);
+            string oRight = Visit(oNode.Right, oResult);
             if (oRight == "NULL")
                 return oOperatorStr == "=" ? $"{oLeft} IS NULL" : $"{oLeft} IS NOT NULL";
             if (oLeft == "NULL")
@@ -88,33 +116,32 @@ namespace SQLiteORM
             return $"({oLeft} {oOperatorStr} {oRight})";
         }
 
-        private string VisitBinaryArithmetic(Expression oNode, string oOperatorStr)
+        private string VisitBinaryArithmetic(Expression oNode, string oOperatorStr, SqlWithParameters oResult)
         {
             BinaryExpression oBinary = (BinaryExpression)oNode;
-            string oLeft = Visit(oBinary.Left);
-            string oRight = Visit(oBinary.Right);
+            string oLeft = Visit(oBinary.Left, oResult);
+            string oRight = Visit(oBinary.Right, oResult);
             return $"({oLeft} {oOperatorStr} {oRight})";
         }
 
-        private string VisitBinaryBitwise(Expression oNode, string oOperatorStr)
+        private string VisitBinaryBitwise(Expression oExpression, string oOperatorStr, SqlWithParameters oResult)
         {
-            BinaryExpression oBinary = (BinaryExpression)oNode;
-            string oLeft = Visit(oBinary.Left);
-            string oRight = Visit(oBinary.Right);
+            BinaryExpression oBinary = (BinaryExpression)oExpression;
+            string oLeft = Visit(oBinary.Left, oResult);
+            string oRight = Visit(oBinary.Right, oResult);
             return $"({oLeft} {oOperatorStr} {oRight})";
         }
 
-        private string VisitCoalesce(BinaryExpression oNode)
+        private string VisitCoalesce(BinaryExpression oNode, SqlWithParameters oResult)
         {
-            string oLeft = Visit(oNode.Left);
-            string oRight = Visit(oNode.Right);
+            string oLeft = Visit(oNode.Left, oResult);
+            string oRight = Visit(oNode.Right, oResult);
             return $"COALESCE({oLeft}, {oRight})";
         }
 
-        private string VisitMember(MemberExpression oNode)
+        private string VisitMember(MemberExpression oNode, SqlWithParameters oResult)
         {
-            if (oNode.Expression is ParameterExpression oParamExpr &&
-                oParamExpr.Type == typeof(T))
+            if (oNode.Expression is ParameterExpression oParamExpr && oParamExpr.Type == typeof(T))
             {
                 return $"[{oNode.Member.Name}]";
             }
@@ -122,39 +149,49 @@ namespace SQLiteORM
                 oInnerMember.Type == typeof(DateTime) &&
                 oNode.Member.DeclaringType == typeof(DateTime))
             {
-                string oInner = Visit(oInnerMember);
-                switch (oNode.Member.Name)
+                string oInner = Visit(oInnerMember, oResult);
+                string sMemberName = oNode.Member.Name;
+                if (sMemberName == "Year") return $"CAST(STRFTIME('%Y', {oInner}) AS INTEGER)";
+                if (sMemberName == "Month") return $"CAST(STRFTIME('%m', {oInner}) AS INTEGER)";
+                if (sMemberName == "Day") return $"CAST(STRFTIME('%d', {oInner}) AS INTEGER)";
+                if (sMemberName == "Hour") return $"CAST(STRFTIME('%H', {oInner}) AS INTEGER)";
+                if (sMemberName == "Minute") return $"CAST(STRFTIME('%M', {oInner}) AS INTEGER)";
+                if (sMemberName == "Second") return $"CAST(STRFTIME('%S', {oInner}) AS INTEGER)";
+                if (sMemberName == "DayOfWeek") return $"CAST(STRFTIME('%w', {oInner}) AS INTEGER)";
+                if (sMemberName == "DayOfYear") return $"CAST(STRFTIME('%j', {oInner}) AS INTEGER)";
+                if (sMemberName == "Date") return $"DATE({oInner})";
+                throw new NotSupportedException($"DateTime property '{sMemberName}' is not supported.");
+            }
+            if (oNode.Member.DeclaringType != null &&
+                oNode.Member.DeclaringType.IsGenericType &&
+                oNode.Member.DeclaringType.GetGenericTypeDefinition() == typeof(Nullable<>))
+            {
+                if (oNode.Member.Name == "HasValue")
                 {
-                    case "Year": return $"CAST(STRFTIME('%Y', {oInner}) AS INTEGER)";
-                    case "Month": return $"CAST(STRFTIME('%m', {oInner}) AS INTEGER)";
-                    case "Day": return $"CAST(STRFTIME('%d', {oInner}) AS INTEGER)";
-                    case "Hour": return $"CAST(STRFTIME('%H', {oInner}) AS INTEGER)";
-                    case "Minute": return $"CAST(STRFTIME('%M', {oInner}) AS INTEGER)";
-                    case "Second": return $"CAST(STRFTIME('%S', {oInner}) AS INTEGER)";
-                    case "DayOfWeek": return $"CAST(STRFTIME('%w', {oInner}) AS INTEGER)";
-                    case "DayOfYear": return $"CAST(STRFTIME('%j', {oInner}) AS INTEGER)";
-                    default:
-                        throw new NotSupportedException($"DateTime property {oNode.Member.Name} is not supported");
+                    string oInner = Visit(oNode.Expression, oResult);
+                    return $"({oInner} IS NOT NULL)";
+                }
+                if (oNode.Member.Name == "Value")
+                {
+                    return Visit(oNode.Expression, oResult);
                 }
             }
-            try
+            var oCompiled = _MemberCache.GetOrAdd(oNode, node =>
             {
-                object oValue = Expression.Lambda(oNode).Compile().DynamicInvoke();
-                return VisitConstant(Expression.Constant(oValue, oNode.Type));
-            }
-            catch
-            {
-                throw new NotSupportedException($"Member '{oNode.Member.Name}' cannot be evaluated");
-            }
+                var lambda = Expression.Lambda<Func<object>>(Expression.Convert(node, typeof(object)));
+                return lambda.Compile();
+            });
+            var oValue = oCompiled();
+            return VisitConstant(Expression.Constant(oValue, oNode.Type), oResult);
         }
 
-        private string VisitConstant(ConstantExpression oNode)
+        private string VisitConstant(ConstantExpression oExpr, SqlWithParameters oResult)
         {
-            if (oNode.Value == null)
+            if (oExpr.Value == null)
                 return "NULL";
-            if (oNode.Value is IEnumerable oEnumerable &&
-                !(oNode.Value is string) &&
-                !(oNode.Value is byte[]))
+            if (oExpr.Value is IEnumerable oEnumerable &&
+                !(oExpr.Value is string) &&
+                !(oExpr.Value is byte[]))
             {
                 var oSb = new StringBuilder();
                 oSb.Append('(');
@@ -162,14 +199,17 @@ namespace SQLiteORM
                 foreach (var oItem in oEnumerable)
                 {
                     if (!bFirst) oSb.Append(", ");
-                    oSb.Append(VisitConstant(Expression.Constant(oItem)));
+                    oSb.Append(VisitConstant(Expression.Constant(oItem), oResult));
                     bFirst = false;
                 }
                 if (bFirst) oSb.Append("NULL");
                 oSb.Append(')');
                 return oSb.ToString();
             }
-            return FormatValue(oNode.Value);
+
+            string sParamName = $"@p{_ParameterIndex++}";
+            oResult.Parameters[sParamName] = oExpr.Value;
+            return sParamName;
         }
 
         private string FormatValue(object oValue)
@@ -187,146 +227,159 @@ namespace SQLiteORM
                 return $"'{guid}'";
             if (oValue is TimeSpan timeSpan)
                 return $"'{timeSpan}'";
+            if (oValue is IFormattable formattable)
+                return formattable.ToString(null, CultureInfo.InvariantCulture);
             return oValue.ToString();
         }
 
-        private string VisitMethodCall(MethodCallExpression oNode)
+        private string VisitMethodCall(MethodCallExpression oEx, SqlWithParameters oResult)
         {
-            if (oNode.Object != null && oNode.Object is MethodCallExpression)
+            if (oEx.Object != null && oEx.Object.Type == typeof(string))
             {
-                string oInnerValue = Visit(oNode.Object);
-                switch (oNode.Method.Name)
+                string sTarget = Visit(oEx.Object, oResult);
+                string[] aArgs = oEx.Arguments.Select(arg => Visit(arg, oResult)).ToArray();
+                string sMethodName = oEx.Method.Name;
+                if (sMethodName == "Contains") return $"{sTarget} LIKE '%' || {aArgs[0]} || '%'";
+                if (sMethodName == "StartsWith") return $"{sTarget} LIKE {aArgs[0]} || '%'";
+                if (sMethodName == "EndsWith") return $"{sTarget} LIKE '%' || {aArgs[0]}";
+                if (sMethodName == "Equals") return $"{sTarget} = {aArgs[0]}";
+                if (sMethodName == "Trim") return $"TRIM({sTarget})";
+                if (sMethodName == "ToUpper") return $"UPPER({sTarget})";
+                if (sMethodName == "ToLower") return $"LOWER({sTarget})";
+                if (sMethodName == "Replace") return $"REPLACE({sTarget}, {aArgs[0]}, {aArgs[1]})";
+                if (sMethodName == "Substring")
                 {
-                    case "Trim": return $"TRIM({oInnerValue})";
-                    case "ToUpper": return $"UPPER({oInnerValue})";
-                    case "ToLower": return $"LOWER({oInnerValue})";
-                    default:
-                        throw new NotSupportedException($"Method '{oNode.Method.Name}' is not supported");
+                    if (aArgs.Length == 1)
+                        return $"SUBSTR({sTarget}, {aArgs[0]} + 1)";
+                    else if (aArgs.Length == 2)
+                        return $"SUBSTR({sTarget}, {aArgs[0]} + 1, {aArgs[1]})";
+                    else
+                        throw new NotSupportedException("Substring with more than 2 parameters is not supported.");
                 }
-            }
-            if (oNode.Method.DeclaringType == typeof(string))
-            {
-                string sMember = oNode.Object != null ? Visit(oNode.Object) : null;
-                string[] aArgs = oNode.Arguments.Select(Visit).ToArray();
-                switch (oNode.Method.Name)
+                if (sMethodName == "get_Length") return $"LENGTH({sTarget})";
+                if (sMethodName == "IndexOf")
                 {
-                    case "Contains": return $"{sMember} LIKE '%' || {aArgs[0]} || '%'";
-                    case "StartsWith": return $"{sMember} LIKE {aArgs[0]} || '%'";
-                    case "EndsWith": return $"{sMember} LIKE '%' || {aArgs[0]}";
-                    case "Equals": return $"{sMember} = {aArgs[0]}";
-                    case "Trim": return $"TRIM({sMember})";
-                    case "ToUpper": return $"UPPER({sMember})";
-                    case "ToLower": return $"LOWER({sMember})";
-                    case "Replace": return $"REPLACE({sMember}, {aArgs[0]}, {aArgs[1]})";
-                    case "Substring":
-                        if (aArgs.Length == 1)
-                            return $"SUBSTR({sMember}, {aArgs[0]} + 1)";
-                        else if (aArgs.Length == 2)
-                            return $"SUBSTR({sMember}, {aArgs[0]} + 1, {aArgs[1]})";
-                        else
-                            throw new NotSupportedException("Substring with more than 2 parameters not supported");
-                    case "get_Length": return $"LENGTH({sMember})";
-                    case "IndexOf":
-                        if (aArgs.Length == 1)
-                            return $"INSTR({sMember}, {aArgs[0]}) - 1";
-                        else
-                            throw new NotSupportedException("IndexOf with parameters not supported");
-                    default:
-                        throw new NotSupportedException($"String method '{oNode.Method.Name}' is not supported");
+                    if (aArgs.Length == 1)
+                        return $"INSTR({sTarget}, {aArgs[0]}) - 1";
+                    else
+                        throw new NotSupportedException("IndexOf with parameters is not supported.");
                 }
+                throw new NotSupportedException($"String method '{sMethodName}' is not supported.");
             }
-            if (oNode.Method.DeclaringType == typeof(Enumerable))
+
+            if (oEx.Method.DeclaringType == typeof(string))
             {
-                switch (oNode.Method.Name)
+                string sTarget = Visit(oEx.Arguments[0], oResult);
+                string sMethodName = oEx.Method.Name;
+
+                if (sMethodName == "IsNullOrEmpty")
+                    return $"({sTarget} IS NULL OR {sTarget} = '')";
+                if (sMethodName == "IsNullOrWhiteSpace")
+                    return $"({sTarget} IS NULL OR TRIM({sTarget}) = '')";
+
+                throw new NotSupportedException($"Static string method '{sMethodName}' is not supported.");
+            }
+
+            if (oEx.Method.DeclaringType == typeof(Enumerable) && oEx.Method.Name == "Contains")
+            {
+                return HandleEnumerableContains(oEx, oResult);
+            }
+
+            if (oEx.Method.Name == "Contains" && oEx.Object != null)
+            {
+                return HandleInstanceContains(oEx, oResult);
+            }
+
+            if (oEx.Method.DeclaringType == typeof(Math))
+            {
+                string[] aArgs = oEx.Arguments.Select(arg => Visit(arg, oResult)).ToArray();
+                string sMethodName = oEx.Method.Name;
+
+                if (sMethodName == "Abs") return $"ABS({aArgs[0]})";
+                if (sMethodName == "Round")
                 {
-                    case "Contains": return HandleEnumerableContains(oNode);
-                    default:
-                        throw new NotSupportedException($"Enumerable method '{oNode.Method.Name}' is not supported");
+                    if (aArgs.Length == 1)
+                        return $"ROUND({aArgs[0]})";
+                    else if (aArgs.Length == 2)
+                        return $"ROUND({aArgs[0]}, {aArgs[1]})";
+                    else
+                        throw new NotSupportedException("Round with more than 2 parameters is not supported.");
                 }
+                if (sMethodName == "Ceiling") return $"CEIL({aArgs[0]})";
+                if (sMethodName == "Floor") return $"FLOOR({aArgs[0]})";
+
+                throw new NotSupportedException($"Math method '{sMethodName}' is not supported.");
             }
-            if (oNode.Method.DeclaringType == typeof(Math))
+
+            if (oEx.Object is MethodCallExpression)
             {
-                string[] aArgs = oNode.Arguments.Select(Visit).ToArray();
-                switch (oNode.Method.Name)
-                {
-                    case "Abs": return $"ABS({aArgs[0]})";
-                    case "Round":
-                        if (aArgs.Length == 1)
-                            return $"ROUND({aArgs[0]})";
-                        else if (aArgs.Length == 2)
-                            return $"ROUND({aArgs[0]}, {aArgs[1]})";
-                        else
-                            throw new NotSupportedException("Round with more than 2 parameters not supported");
-                    case "Ceiling": return $"CEIL({aArgs[0]})";
-                    case "Floor": return $"FLOOR({aArgs[0]})";
-                    default:
-                        throw new NotSupportedException($"Math method '{oNode.Method.Name}' is not supported");
-                }
+                string oInner = Visit(oEx.Object, oResult);
+                string sMethodName = oEx.Method.Name;
+
+                if (sMethodName == "Trim") return $"TRIM({oInner})";
+                if (sMethodName == "ToUpper") return $"UPPER({oInner})";
+                if (sMethodName == "ToLower") return $"LOWER({oInner})";
+
+                throw new NotSupportedException($"Chained method '{sMethodName}' is not supported.");
             }
-            if (oNode.Method.Name == "Contains" && oNode.Object != null)
-            {
-                return HandleInstanceContains(oNode);
-            }
-            throw new NotSupportedException($"Method '{oNode.Method.Name}' is not supported");
+            throw new NotSupportedException($"Method '{oEx.Method.Name}' on type '{(oEx.Method.DeclaringType != null ? oEx.Method.DeclaringType.Name : "unknown")}' is not supported.");
         }
 
-        private string HandleEnumerableContains(MethodCallExpression oNode)
+        private string HandleEnumerableContains(MethodCallExpression oExpression, SqlWithParameters oResult)
         {
-            object oCollectionValue;
             try
             {
-                oCollectionValue = Expression.Lambda(oNode.Arguments[0]).Compile().DynamicInvoke();
+                var oCollection = Expression.Lambda(oExpression.Arguments[0]).Compile().DynamicInvoke();
+                string sValues = VisitConstant(Expression.Constant(oCollection), oResult);
+                string sItem = Visit(oExpression.Arguments[1], oResult);
+                return $"{sItem} IN {sValues}";
             }
-            catch
+            catch (Exception oEx)
             {
-                throw new NotSupportedException("Collection in Contains must be evaluable");
+                throw new NotSupportedException("Collection in Enumerable.Contains must be evaluable.", oEx);
             }
-            string sValues = VisitConstant(Expression.Constant(oCollectionValue));
-            string sItem = Visit(oNode.Arguments[1]);
-            return $"{sItem} IN {sValues}";
         }
 
-        private string HandleInstanceContains(MethodCallExpression oNode)
+        private string HandleInstanceContains(MethodCallExpression oNode, SqlWithParameters oResult)
         {
-            object oCollectionValue;
             try
             {
-                oCollectionValue = Expression.Lambda(oNode.Object).Compile().DynamicInvoke();
+                var oCollection = Expression.Lambda(oNode.Object).Compile().DynamicInvoke();
+                string sValues = VisitConstant(Expression.Constant(oCollection), oResult);
+                string sItem = Visit(oNode.Arguments[0], oResult);
+                return $"{sItem} IN {sValues}";
             }
-            catch
+            catch (Exception oEx)
             {
-                throw new NotSupportedException("Collection in Contains must be evaluable");
+                throw new NotSupportedException("Collection in instance.Contains must be evaluable.", oEx);
             }
-            string sValues = VisitConstant(Expression.Constant(oCollectionValue));
-            string sItem = Visit(oNode.Arguments[0]);
-            return $"{sItem} IN {sValues}";
         }
 
-        private string VisitConvert(UnaryExpression oNode)
+        private string VisitConvert(UnaryExpression oExpr, SqlWithParameters oResult)
         {
-            return Visit(oNode.Operand);
+            return Visit(oExpr.Operand, oResult);
         }
 
-        private string VisitNot(UnaryExpression oNode)
+        private string VisitNot(UnaryExpression oNode, SqlWithParameters oResult)
         {
-            string oOperand = Visit(oNode.Operand);
+            string oOperand = Visit(oNode.Operand, oResult);
             if (oNode.Type == typeof(bool) || oNode.Type == typeof(bool?))
                 return $"NOT ({oOperand})";
             else
                 return $"~({oOperand})";
         }
 
-        private string VisitUnaryMinus(UnaryExpression oNode)
+        private string VisitUnaryMinus(UnaryExpression oExpression, SqlWithParameters oResult)
         {
-            string oOperand = Visit(oNode.Operand);
+            string oOperand = Visit(oExpression.Operand, oResult);
             return $"-({oOperand})";
         }
 
-        private string VisitConditional(ConditionalExpression oNode)
+        private string VisitConditional(ConditionalExpression oNode, SqlWithParameters oResult)
         {
-            string sTest = Visit(oNode.Test);
-            string sIfTrue = Visit(oNode.IfTrue);
-            string sIfFalse = Visit(oNode.IfFalse);
+            string sTest = Visit(oNode.Test, oResult);
+            string sIfTrue = Visit(oNode.IfTrue, oResult);
+            string sIfFalse = Visit(oNode.IfFalse, oResult);
             return $"(CASE WHEN {sTest} THEN {sIfTrue} ELSE {sIfFalse} END)";
         }
     }

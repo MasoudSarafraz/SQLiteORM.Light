@@ -22,7 +22,6 @@ namespace SQLiteORM
         private static bool _TablesChecked = false;
         private static readonly object _ConfigLock = new object();
         private static readonly object _TableCheckLock = new object();
-        // کش‌ها برای بهبود عملکرد
         private static readonly ConcurrentDictionary<Type, bool> _TableCheckCache = new ConcurrentDictionary<Type, bool>();
         private static readonly ConcurrentDictionary<Type, PropertyInfo[]> _PropertyCache = new ConcurrentDictionary<Type, PropertyInfo[]>();
         private static readonly ConcurrentDictionary<Type, string> _TableNameCache = new ConcurrentDictionary<Type, string>();
@@ -35,53 +34,13 @@ namespace SQLiteORM
             LoadDatabaseConfig();
         }
 
-        //private static void LoadDatabaseConfig()
-        //{
-        //    lock (_configLock)
-        //    {
-        //        try
-        //        {
-        //            string sConfigPath = Path.Combine(
-        //                AppDomain.CurrentDomain.BaseDirectory,
-        //                _ConfigFileName);
-
-        //            if (!File.Exists(sConfigPath))
-        //            {
-        //                CreateDefaultConfig(sConfigPath);
-        //            }
-
-        //            XDocument oDoc = XDocument.Load(sConfigPath);
-        //            string sDatabaseName = oDoc.Root?.Element("DatabaseName")?.Value ?? _DefaultDbFileName;
-        //            string sDatabasePath = oDoc.Root?.Element("DatabasePath")?.Value;
-
-        //            if (string.IsNullOrWhiteSpace(sDatabaseName))
-        //                throw new InvalidOperationException("Database name not specified in config file");
-
-        //            if (string.IsNullOrWhiteSpace(sDatabasePath) || sDatabasePath == "." || sDatabasePath.Equals("default", StringComparison.OrdinalIgnoreCase))
-        //            {
-        //                sDatabasePath = AppDomain.CurrentDomain.BaseDirectory;
-        //            }
-
-        //            _oDefaultDbPath = Path.Combine(sDatabasePath, sDatabaseName);
-        //            EnsureDatabaseFileExists();
-        //            CheckAllTableStructures();
-        //        }
-        //        catch (Exception oEx)
-        //        {
-        //            throw new InvalidOperationException("Failed to load database configuration: " + oEx.Message, oEx);
-        //        }
-        //    }
-        //}
         private static void LoadDatabaseConfig()
         {
             lock (_ConfigLock)
             {
                 try
                 {
-                    string oDllDirectory = Path.GetDirectoryName(
-                        Assembly.GetExecutingAssembly().Location
-                    ) ?? throw new InvalidOperationException("Unable to determine assembly location");
-
+                    string oDllDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? throw new InvalidOperationException("Unable to determine assembly location");
                     string sConfigPath = Path.Combine(oDllDirectory, _ConfigFileName);
                     if (!File.Exists(sConfigPath))
                     {
@@ -96,13 +55,11 @@ namespace SQLiteORM
                     string sDatabasePath = oDoc.Root?.Element("DatabasePath")?.Value;
                     if (string.IsNullOrWhiteSpace(sDatabaseName))
                         throw new InvalidOperationException("Database name not specified in config file");
-
                     if (string.IsNullOrWhiteSpace(sDatabasePath) || sDatabasePath == "." ||
                         sDatabasePath.Equals("default", StringComparison.OrdinalIgnoreCase))
                     {
                         sDatabasePath = AppDomain.CurrentDomain.BaseDirectory;
                     }
-
                     _oDefaultDbPath = Path.Combine(sDatabasePath, sDatabaseName);
                     EnsureDatabaseFileExists();
                     CheckAllTableStructures();
@@ -114,35 +71,12 @@ namespace SQLiteORM
             }
         }
 
-
-        //private static void CheckAllTableStructures()
-        //{
-        //    if (_TablesChecked) return;
-
-        //    lock (_tableCheckLock)
-        //    {
-        //        if (_TablesChecked) return;
-
-        //        var aModelTypes = AppDomain.CurrentDomain.GetAssemblies()
-        //            .SelectMany(a => a.GetTypes())
-        //            .Where(t => t.GetCustomAttributes(typeof(TableAttribute), false).Length > 0)
-        //            .ToList();
-
-        //        foreach (var oType in aModelTypes)
-        //        {
-        //            CheckTableStructure(oType);
-        //        }
-        //        _TablesChecked = true;
-        //    }
-        //}
         private static void CheckAllTableStructures()
         {
             if (_TablesChecked) return;
-
             lock (_TableCheckLock)
             {
                 if (_TablesChecked) return;
-
                 var aModelTypes = AppDomain.CurrentDomain.GetAssemblies()
                     .SelectMany(a =>
                     {
@@ -151,12 +85,10 @@ namespace SQLiteORM
                     })
                     .Where(t => t.GetCustomAttributes(typeof(TableAttribute), false).Length > 0)
                     .ToList();
-
                 foreach (var oType in aModelTypes)
                 {
                     CheckTableStructure(oType);
                 }
-
                 _TablesChecked = true;
             }
         }
@@ -167,15 +99,12 @@ namespace SQLiteORM
             if (aTableAttrs.Length == 0) return;
             var oTableAttr = (TableAttribute)aTableAttrs[0];
             string sTableName = GetFullTableName(oTableAttr);
-            // گرفتن قفل مخصوص این جدول
             var oTableLock = _tableLocks.GetOrAdd(sTableName, new object());
-
             lock (oTableLock)
             {
                 if (_TableCheckCache.TryGetValue(oModelType, out bool bChecked) && bChecked)
                     return;
                 PropertyInfo[] aProperties = GetCachedProperties(oModelType);
-
                 bool bTableExists = false;
                 using (var oConnection = GetConnection())
                 {
@@ -186,7 +115,6 @@ namespace SQLiteORM
                         bTableExists = oCommand.ExecuteScalar() != null;
                     }
                 }
-
                 if (!bTableExists)
                 {
                     CreateTable(oModelType, sTableName, aProperties.ToList());
@@ -212,7 +140,6 @@ namespace SQLiteORM
                         AddMissingColumns(sTableName, aMissingProperties);
                     }
                 }
-                // بررسی و ایجاد ایندکس‌ها
                 CheckAndCreateIndexes(oModelType, sTableName);
                 _TableCheckCache[oModelType] = true;
             }
@@ -225,8 +152,7 @@ namespace SQLiteORM
             foreach (var oProp in aProperties)
             {
                 string sColumnType = GetSQLiteType(oProp.PropertyType);
-                string sColumnDefinition = $"{oProp.Name} {sColumnType}"; // حذف براکت از نام ستون
-
+                string sColumnDefinition = $"{oProp.Name} {sColumnType}";
                 if (oProp == oPrimaryKey)
                 {
                     if (IsAutoIncrementType(oProp.PropertyType))
@@ -244,7 +170,7 @@ namespace SQLiteORM
                 }
                 aColumns.Add(sColumnDefinition);
             }
-            string sCreateTableSql = $"CREATE TABLE {sTableName} ({string.Join(", ", aColumns)})"; // حذف براکت از نام جدول
+            string sCreateTableSql = $"CREATE TABLE {sTableName} ({string.Join(", ", aColumns)})";
             ExecuteNonQuery(sCreateTableSql);
         }
 
@@ -254,7 +180,6 @@ namespace SQLiteORM
             using (var oConnection = GetConnection())
             {
                 oConnection.Open();
-                // دریافت ایندکس‌های موجود
                 var aExistingIndexes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 using (var oCommand = new SQLiteCommand(
                     "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=@tableName", oConnection))
@@ -268,7 +193,6 @@ namespace SQLiteORM
                         }
                     }
                 }
-                // ایجاد ایندکس‌های جدید
                 foreach (var oIndexInfo in aIndexInfos.Where(i => i.AutoCreate && !aExistingIndexes.Contains(i.Name)))
                 {
                     string sUnique = oIndexInfo.IsUnique ? "UNIQUE" : "";
@@ -285,19 +209,16 @@ namespace SQLiteORM
             {
                 var aIndexInfos = new List<IndexInfo>();
                 var aProperties = GetCachedProperties(type);
-                // ایندکس‌های تکی
                 foreach (var oProp in aProperties)
                 {
                     var aIndexAttrs = oProp.GetCustomAttributes(typeof(IndexAttribute), false)
                         .Cast<IndexAttribute>()
                         .Where(attr => attr.AutoCreate);
-
                     foreach (var oIndexAttr in aIndexAttrs)
                     {
                         string sIndexName = string.IsNullOrEmpty(oIndexAttr.Name)
                             ? $"IX_{GetCachedTableName(type)}_{oProp.Name}"
                             : oIndexAttr.Name;
-
                         aIndexInfos.Add(new IndexInfo
                         {
                             Name = sIndexName,
@@ -307,7 +228,6 @@ namespace SQLiteORM
                         });
                     }
                 }
-                // ایندکس‌های ترکیبی (بر اساس نام)
                 var aGroupedIndexes = aIndexInfos.Where(i => !string.IsNullOrEmpty(i.Name))
                     .GroupBy(i => i.Name)
                     .Where(g => g.Count() > 1);
@@ -357,13 +277,10 @@ namespace SQLiteORM
                         foreach (var oProp in aMissingProperties)
                         {
                             string sColumnType = GetSQLiteType(oProp.PropertyType);
-                            string sColumnDefinition = $"{oProp.Name} {sColumnType}"; // حذف براکت
-
+                            string sColumnDefinition = $"{oProp.Name} {sColumnType}";
                             if (!IsNullableType(oProp.PropertyType))
                                 sColumnDefinition += " NOT NULL";
-
-                            string sAlterSql = $"ALTER TABLE {sTableName} ADD COLUMN {sColumnDefinition}"; // حذف براکت
-
+                            string sAlterSql = $"ALTER TABLE {sTableName} ADD COLUMN {sColumnDefinition}";
                             using (var oCommand = new SQLiteCommand(sAlterSql, oConnection, oTransaction))
                             {
                                 oCommand.ExecuteNonQuery();
@@ -382,8 +299,7 @@ namespace SQLiteORM
 
         private static PropertyInfo[] GetCachedProperties(Type oType)
         {
-            return _PropertyCache.GetOrAdd(oType, type => type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetCustomAttributes(typeof(IgnoreAttribute), false).Length == 0)
-                    .ToArray());
+            return _PropertyCache.GetOrAdd(oType, type => type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetCustomAttributes(typeof(IgnoreAttribute), false).Length == 0).ToArray());
         }
 
         private static string GetCachedTableName(Type oType)
@@ -426,7 +342,6 @@ namespace SQLiteORM
             if (string.IsNullOrWhiteSpace(sDbFileName))
             {
                 throw new ArgumentNullException(nameof(sDbFileName));
-
             }
             lock (_ConfigLock)
             {
@@ -444,7 +359,6 @@ namespace SQLiteORM
                 string sDirectory = Path.GetDirectoryName(_oDefaultDbPath);
                 if (!string.IsNullOrEmpty(sDirectory) && !Directory.Exists(sDirectory))
                     Directory.CreateDirectory(sDirectory);
-
                 if (!File.Exists(_oDefaultDbPath))
                     SQLiteConnection.CreateFile(_oDefaultDbPath);
             }
@@ -473,7 +387,6 @@ namespace SQLiteORM
                 return "TEXT";
             if (oType == typeof(byte[]))
                 return "BLOB";
-
             return "TEXT";
         }
 
@@ -516,15 +429,13 @@ namespace SQLiteORM
         {
             if (oEntity == null)
                 throw new ArgumentNullException(nameof(oEntity));
-
             string sTableName = GetCachedTableName<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T)).Where(p => p != oPrimaryKey || !IsAutoIncrementType(p.PropertyType))
-                .ToArray();
-            string sColumns = string.Join(", ", aProperties.Select(p => $"{p.Name}")); // حذف براکت
+            PropertyInfo[] aProperties = GetCachedProperties(typeof(T))
+            .Where(p => p != oPrimaryKey || !IsAutoIncrementType(p.PropertyType)).ToArray();
+            string sColumns = string.Join(", ", aProperties.Select(p => $"{p.Name}"));
             string sParameters = string.Join(", ", aProperties.Select(p => "@" + p.Name));
-            string sSql = $"INSERT INTO {sTableName} ({sColumns}) VALUES ({sParameters}); SELECT last_insert_rowid();"; // حذف براکت
-
+            string sSql = $"INSERT INTO {sTableName} ({sColumns}) VALUES ({sParameters}); SELECT last_insert_rowid();";
             using (SQLiteConnection oConnection = GetConnection(sDbPath))
             {
                 oConnection.Open();
@@ -539,15 +450,12 @@ namespace SQLiteORM
                         }
                         oCommand.Parameters.AddWithValue("@" + oProp.Name, oValue);
                     }
-
                     object result = oCommand.ExecuteScalar();
                     int iGeneratedId = Convert.ToInt32(result);
-
                     if (oPrimaryKey != null && oPrimaryKey.CanWrite && IsAutoIncrementType(oPrimaryKey.PropertyType))
                     {
                         oPrimaryKey.SetValue(oEntity, iGeneratedId, null);
                     }
-
                     return iGeneratedId;
                 }
             }
@@ -559,17 +467,12 @@ namespace SQLiteORM
                 throw new ArgumentNullException(nameof(oEntities));
             if (!oEntities.Any())
                 return 0;
-
             string sTableName = GetCachedTableName<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T))
-                .Where(p => p != oPrimaryKey || !IsAutoIncrementType(p.PropertyType))
-                .ToArray();
-
-            string sColumns = string.Join(", ", aProperties.Select(p => $"{p.Name}")); // حذف براکت
+            PropertyInfo[] aProperties = GetCachedProperties(typeof(T)).Where(p => p != oPrimaryKey || !IsAutoIncrementType(p.PropertyType)).ToArray();
+            string sColumns = string.Join(", ", aProperties.Select(p => $"{p.Name}"));
             string sParameters = string.Join(", ", aProperties.Select(p => "@" + p.Name));
-            string sSql = $"INSERT INTO {sTableName} ({sColumns}) VALUES ({sParameters}); SELECT last_insert_rowid();"; // حذف براکت
-
+            string sSql = $"INSERT INTO {sTableName} ({sColumns}) VALUES ({sParameters}); SELECT last_insert_rowid();";
             using (SQLiteConnection oConnection = GetConnection(sDbPath))
             {
                 oConnection.Open();
@@ -591,15 +494,12 @@ namespace SQLiteORM
                                     }
                                     oCommand.Parameters.AddWithValue("@" + oProp.Name, oValue);
                                 }
-
-                                object result = oCommand.ExecuteScalar();
-                                int iGeneratedId = Convert.ToInt32(result);
-
+                                object oResult = oCommand.ExecuteScalar();
+                                int iGeneratedId = Convert.ToInt32(oResult);
                                 if (oPrimaryKey != null && oPrimaryKey.CanWrite && IsAutoIncrementType(oPrimaryKey.PropertyType))
                                 {
                                     oPrimaryKey.SetValue(oEntity, iGeneratedId, null);
                                 }
-
                                 iCount++;
                             }
                         }
@@ -619,16 +519,13 @@ namespace SQLiteORM
         {
             if (oEntity == null)
                 throw new ArgumentNullException(nameof(oEntity));
-
             string sTableName = GetCachedTableName<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
             if (oPrimaryKey == null)
                 throw new InvalidOperationException("Entity must have a primary key property");
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T))
-                .Where(p => p != oPrimaryKey)
-                .ToArray();
-            string sSetClause = string.Join(", ", aProperties.Select(p => $"{p.Name} = @{p.Name}")); // حذف براکت
-            string sSql = $"UPDATE {sTableName} SET {sSetClause} WHERE {oPrimaryKey.Name} = @PrimaryKey"; // حذف براکت
+            PropertyInfo[] aProperties = GetCachedProperties(typeof(T)).Where(p => p != oPrimaryKey).ToArray();
+            string sSetClause = string.Join(", ", aProperties.Select(p => $"{p.Name} = @{p.Name}"));
+            string sSql = $"UPDATE {sTableName} SET {sSetClause} WHERE {oPrimaryKey.Name} = @PrimaryKey";
             using (SQLiteConnection oConnection = GetConnection(sDbPath))
             {
                 oConnection.Open();
@@ -643,10 +540,8 @@ namespace SQLiteORM
                         }
                         oCommand.Parameters.AddWithValue("@" + oProp.Name, oValue);
                     }
-
                     object oPrimaryKeyValue = oPrimaryKey.GetValue(oEntity, null) ?? DBNull.Value;
                     oCommand.Parameters.AddWithValue("@PrimaryKey", oPrimaryKeyValue);
-
                     return oCommand.ExecuteNonQuery() > 0;
                 }
             }
@@ -663,7 +558,6 @@ namespace SQLiteORM
             if (oPrimaryKey == null)
                 throw new InvalidOperationException("Entity must have a primary key property");
             PropertyInfo[] aProperties = GetCachedProperties(typeof(T)).Where(p => p != oPrimaryKey).ToArray();
-
             string sSetClause = string.Join(", ", aProperties.Select(p => $"{p.Name} = @{p.Name}"));
             string sSql = $"UPDATE {sTableName} SET {sSetClause} WHERE {oPrimaryKey.Name} = @PrimaryKey";
             using (SQLiteConnection oConnection = GetConnection(sDbPath))
@@ -726,7 +620,6 @@ namespace SQLiteORM
                 throw new ArgumentNullException(nameof(aIds));
             if (!aIds.Any())
                 return 0;
-
             string sTableName = GetCachedTableName<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
             using (SQLiteConnection oConnection = GetConnection(sDbPath))
@@ -739,7 +632,7 @@ namespace SQLiteORM
                     {
                         foreach (int iId in aIds)
                         {
-                            string sSql = $"DELETE FROM {sTableName} WHERE {oPrimaryKey.Name} = @PrimaryKey"; // حذف براکت
+                            string sSql = $"DELETE FROM {sTableName} WHERE {oPrimaryKey.Name} = @PrimaryKey";
                             using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection, oTransaction))
                             {
                                 oCommand.Parameters.AddWithValue("@PrimaryKey", iId);
@@ -762,13 +655,17 @@ namespace SQLiteORM
         {
             string sTableName = GetCachedTableName<T>();
             var oConverter = new ExpressionToSql<T>();
-            string sWhereClause = oConverter.Convert(oPredicate);
-            string sSql = $"DELETE FROM {sTableName} WHERE {sWhereClause}";
+            var oSqlWithParams = oConverter.ConvertToSqlWithParameters(oPredicate);
+            string sSql = $"DELETE FROM {sTableName} WHERE {oSqlWithParams.Sql}";
             using (SQLiteConnection oConnection = GetConnection(sDbPath))
             {
                 oConnection.Open();
                 using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
                 {
+                    foreach (var oParam in oSqlWithParams.Parameters)
+                    {
+                        oCommand.Parameters.AddWithValue(oParam.Key, oParam.Value ?? DBNull.Value);
+                    }
                     return oCommand.ExecuteNonQuery() > 0;
                 }
             }
@@ -803,11 +700,11 @@ namespace SQLiteORM
         {
             string sTableName = GetCachedTableName<T>();
             var oConverter = new ExpressionToSql<T>();
-            string sWhereClause = oConverter.Convert(oPredicate);
+            var oSqlWithParams = oConverter.ConvertToSqlWithParameters(oPredicate);
             string sSql = $"SELECT * FROM {sTableName}";
-            if (!string.IsNullOrEmpty(sWhereClause) && sWhereClause != "1=1")
+            if (!string.IsNullOrEmpty(oSqlWithParams.Sql) && oSqlWithParams.Sql != "1=1")
             {
-                sSql += $" WHERE {sWhereClause}";
+                sSql += $" WHERE {oSqlWithParams.Sql}";
             }
             List<T> oResults = new List<T>();
             PropertyInfo[] aProperties = GetCachedProperties(typeof(T));
@@ -816,6 +713,10 @@ namespace SQLiteORM
                 oConnection.Open();
                 using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
                 {
+                    foreach (var oParam in oSqlWithParams.Parameters)
+                    {
+                        oCommand.Parameters.AddWithValue(oParam.Key, oParam.Value ?? DBNull.Value);
+                    }
                     using (SQLiteDataReader oReader = oCommand.ExecuteReader())
                     {
                         while (oReader.Read())
@@ -826,7 +727,6 @@ namespace SQLiteORM
                                 string sFieldName = oReader.GetName(iIndex);
                                 PropertyInfo oProp = Array.Find(aProperties, p =>
                                     p.Name.Equals(sFieldName, StringComparison.OrdinalIgnoreCase));
-
                                 if (oProp != null && !oReader.IsDBNull(iIndex))
                                 {
                                     try
@@ -864,17 +764,21 @@ namespace SQLiteORM
         {
             string sTableName = GetCachedTableName<T>();
             var oConverter = new ExpressionToSql<T>();
-            string sWhereClause = oConverter.Convert(oPredicate);
+            var oSqlWithParams = oConverter.ConvertToSqlWithParameters(oPredicate);
             string sSql = $"SELECT COUNT(*) FROM {sTableName}";
-            if (!string.IsNullOrEmpty(sWhereClause) && sWhereClause != "1=1")
+            if (!string.IsNullOrEmpty(oSqlWithParams.Sql) && oSqlWithParams.Sql != "1=1")
             {
-                sSql += $" WHERE {sWhereClause}";
+                sSql += $" WHERE {oSqlWithParams.Sql}";
             }
             using (SQLiteConnection oConnection = GetConnection(sDbPath))
             {
                 oConnection.Open();
                 using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
                 {
+                    foreach (var oParam in oSqlWithParams.Parameters)
+                    {
+                        oCommand.Parameters.AddWithValue(oParam.Key, oParam.Value ?? DBNull.Value);
+                    }
                     return Convert.ToInt32(oCommand.ExecuteScalar());
                 }
             }
@@ -888,7 +792,7 @@ namespace SQLiteORM
                 {
                     oConnection.Open();
                     var aColumns = new List<string>();
-                    using (var oCommand = new SQLiteCommand($"PRAGMA table_info({sTableName})", oConnection)) // حذف براکت
+                    using (var oCommand = new SQLiteCommand($"PRAGMA table_info({sTableName})", oConnection))
                     using (var oReader = oCommand.ExecuteReader())
                     {
                         while (oReader.Read())
@@ -916,7 +820,7 @@ namespace SQLiteORM
             }
         }
 
-        public static bool Upsert<T>(T oEntity, string sDbPath = null) where T : class, new()//فعلا دستی توسط کاربر استفاده میشود
+        public static bool Upsert<T>(T oEntity, string sDbPath = null) where T : class, new()
         {
             if (oEntity == null)
                 throw new ArgumentNullException(nameof(oEntity));
@@ -949,7 +853,6 @@ namespace SQLiteORM
         }
 
         #region Index Management Methods
-
         public static bool RemoveIndex(string sIndexName, string sDbPath = null)
         {
             try
@@ -972,7 +875,6 @@ namespace SQLiteORM
                 {
                     oConnection.Open();
                     var aIndexNames = new List<string>();
-                    // پیدا کردن تمام ایندکس‌های مربوط به جدول
                     using (var oCommand = new SQLiteCommand(
                         "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=@tableName", oConnection))
                     {
@@ -1006,7 +908,6 @@ namespace SQLiteORM
                 string sPropertyName = GetPropertyName(oPropertySelector);
                 string sTableName = GetCachedTableName<T>();
                 string sIndexName = $"IX_{sTableName}_{sPropertyName}";
-
                 return RemoveIndex(sIndexName, sDbPath);
             }
             catch (Exception oEx)
@@ -1051,7 +952,6 @@ namespace SQLiteORM
             }
         }
 
-        // متد کمکی برای گرفتن نام پراپرتی از expression
         private static string GetPropertyName<T>(Expression<Func<T, object>> oPropertySelector)
         {
             if (oPropertySelector.Body is MemberExpression oMember)
@@ -1064,9 +964,8 @@ namespace SQLiteORM
             }
             throw new ArgumentException("Invalid property expression");
         }
-
         #endregion
-        // کلاس برای نگهداری اطلاعات ایندکس
+        //نگه داری اطلاعات ایندکس ها
         private class IndexInfo
         {
             public string Name { get; set; }
