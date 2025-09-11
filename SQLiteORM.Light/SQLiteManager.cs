@@ -70,6 +70,20 @@ namespace SQLiteORM
                 }
             }
         }
+        public static void SetDefaultDatabasePath(string sDbFileName, string sDbPath = null)
+        {
+            if (string.IsNullOrWhiteSpace(sDbFileName))
+            {
+                throw new ArgumentNullException(nameof(sDbFileName));
+            }
+            lock (_ConfigLock)
+            {
+                string sBasePath = sDbPath ?? AppDomain.CurrentDomain.BaseDirectory;
+                _oDefaultDbPath = Path.Combine(sBasePath, sDbFileName);
+                EnsureDatabaseFileExists();
+                CheckAllTableStructures();
+            }
+        }
 
         private static void CheckAllTableStructures()
         {
@@ -335,22 +349,7 @@ namespace SQLiteORM
                 )
             );
             oDoc.Save(sConfigPath);
-        }
-
-        public static void SetDefaultDatabasePath(string sDbFileName, string sDbPath = null)
-        {
-            if (string.IsNullOrWhiteSpace(sDbFileName))
-            {
-                throw new ArgumentNullException(nameof(sDbFileName));
-            }
-            lock (_ConfigLock)
-            {
-                string sBasePath = sDbPath ?? AppDomain.CurrentDomain.BaseDirectory;
-                _oDefaultDbPath = Path.Combine(sBasePath, sDbFileName);
-                EnsureDatabaseFileExists();
-                CheckAllTableStructures();
-            }
-        }
+        }        
 
         private static void EnsureDatabaseFileExists()
         {

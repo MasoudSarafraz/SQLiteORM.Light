@@ -4,19 +4,19 @@
 		<!--<TargetFrameworks>net4;net45;netstandard2.0</TargetFrameworks>-->
 		<TargetFrameworks>net4;netstandard2.0</TargetFrameworks>
 		<PackageId>SQLiteORM.Light</PackageId>
-		<PackageVersion>2.0.1</PackageVersion>
-		<Version>2.0.1</Version>
+		<PackageVersion>2.0.2</PackageVersion>
+		<Version>2.0.2</Version>
 		<Authors>Masoud Sarafraz</Authors>
 		<Title>Lightweight SQLite ORM for .NET</Title>
 		<PackageProjectUrl>https://github.com/MasoudSarafraz/SQLiteORM.Light</PackageProjectUrl>
 		<RepositoryUrl>https://github.com/MasoudSarafraz/SQLiteORM.Light</RepositoryUrl>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
-		<PackageTags>sqlite;orm;database;ef6;cross-platform</PackageTags>
+		<PackageTags>sqlite;orm;database</PackageTags>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<GenerateAssemblyInfo>false</GenerateAssemblyInfo>
-		<AssemblyVersion>2.0.1.0</AssemblyVersion>
-		<FileVersion>2.0.1.0</FileVersion>
-		<Description>a Light Weght ORM For SQLite With CRUD, dynamic queries, stored procedures, attributes, thread-safety, and transaction suppor</Description>
+		<AssemblyVersion>2.0.2.0</AssemblyVersion>
+		<FileVersion>2.0.2.0</FileVersion>
+		<Description>a Light Weght ORM For SQLite With CRUD, dynamic queries, attributes, thread-safety and transaction support</Description>
 	</PropertyGroup>
 	<ItemGroup Condition="'$(TargetFramework)' == 'net4'">
 		<PackageReference Include="EntityFramework" Version="6.4.4" />
