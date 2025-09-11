@@ -26,12 +26,49 @@ namespace SQLiteORM
         private static readonly ConcurrentDictionary<Type, PropertyInfo[]> _PropertyCache = new ConcurrentDictionary<Type, PropertyInfo[]>();
         private static readonly ConcurrentDictionary<Type, string> _TableNameCache = new ConcurrentDictionary<Type, string>();
         private static readonly ConcurrentDictionary<Type, PropertyInfo> _PrimaryKeyCache = new ConcurrentDictionary<Type, PropertyInfo>();
-        private static readonly ConcurrentDictionary<string, object> _tableLocks = new ConcurrentDictionary<string, object>();
+        private static readonly ConcurrentDictionary<string, object> _TableLocks = new ConcurrentDictionary<string, object>();
         private static readonly ConcurrentDictionary<Type, List<IndexInfo>> _IndexCache = new ConcurrentDictionary<Type, List<IndexInfo>>();
+        private static readonly ConcurrentDictionary<Type, CachedInsertInfo> _InsertInfoCache = new ConcurrentDictionary<Type, CachedInsertInfo>();
+        private static readonly ConcurrentDictionary<Type, CachedUpdateInfo> _UpdateInfoCache = new ConcurrentDictionary<Type, CachedUpdateInfo>();
+        private static readonly ConcurrentDictionary<Type, Dictionary<string, ColumnMapping>> _ColumnMappingCache = new ConcurrentDictionary<Type, Dictionary<string, ColumnMapping>>();
+        private static readonly ConcurrentDictionary<Type, Func<SQLiteDataReader, object>> _EntityCreators = new ConcurrentDictionary<Type, Func<SQLiteDataReader, object>>();
+        private static readonly ConcurrentBag<SQLiteConnection> _ConnectionPool = new ConcurrentBag<SQLiteConnection>();
+        private static readonly ConcurrentDictionary<Type, Func<object, object>> _ValueConvertersCache = new ConcurrentDictionary<Type, Func<object, object>>();
+        private const int MaxPoolSize = 100;
+        private static int _ConnectionCount = 0;
 
         static SQLiteManager()
         {
             LoadDatabaseConfig();
+        }
+
+        private class CachedInsertInfo
+        {
+            public string Sql { get; set; }
+            public PropertyInfo[] Properties { get; set; }
+            public string[] ParameterNames { get; set; }
+        }
+
+        private class CachedUpdateInfo
+        {
+            public string Sql { get; set; }
+            public PropertyInfo[] Properties { get; set; }
+            public string[] ParameterNames { get; set; }
+        }
+
+        private class ColumnMapping
+        {
+            public PropertyInfo Property { get; set; }
+            public Func<object, object> ValueConverter { get; set; }
+            public int ColumnIndex { get; set; }
+        }
+
+        private class IndexInfo
+        {
+            public string Name { get; set; }
+            public bool IsUnique { get; set; }
+            public List<string> Properties { get; set; }
+            public bool AutoCreate { get; set; }
         }
 
         private static void LoadDatabaseConfig()
@@ -70,6 +107,7 @@ namespace SQLiteORM
                 }
             }
         }
+
         public static void SetDefaultDatabasePath(string sDbFileName, string sDbPath = null)
         {
             if (string.IsNullOrWhiteSpace(sDbFileName))
@@ -91,17 +129,38 @@ namespace SQLiteORM
             lock (_TableCheckLock)
             {
                 if (_TablesChecked) return;
-                var aModelTypes = AppDomain.CurrentDomain.GetAssemblies()
-                    .SelectMany(a =>
-                    {
-                        try { return a.GetTypes(); }
-                        catch (ReflectionTypeLoadException oEx) { return oEx.Types.Where(t => t != null); }
-                    })
-                    .Where(t => t.GetCustomAttributes(typeof(TableAttribute), false).Length > 0)
-                    .ToList();
-                foreach (var oType in aModelTypes)
+                var aModelTypes = new List<Type>();
+                var aAssemblies = AppDomain.CurrentDomain.GetAssemblies();
+                for (int i = 0; i < aAssemblies.Length; i++)
                 {
-                    CheckTableStructure(oType);
+                    try
+                    {
+                        var aTypes = aAssemblies[i].GetTypes();
+                        for (int j = 0; j < aTypes.Length; j++)
+                        {
+                            var type = aTypes[j];
+                            if (type != null && type.GetCustomAttributes(typeof(TableAttribute), false).Length > 0)
+                            {
+                                aModelTypes.Add(type);
+                            }
+                        }
+                    }
+                    catch (ReflectionTypeLoadException oEx)
+                    {
+                        var aTypes = oEx.Types;
+                        for (int j = 0; j < aTypes.Length; j++)
+                        {
+                            var type = aTypes[j];
+                            if (type != null && type.GetCustomAttributes(typeof(TableAttribute), false).Length > 0)
+                            {
+                                aModelTypes.Add(type);
+                            }
+                        }
+                    }
+                }
+                for (int i = 0; i < aModelTypes.Count; i++)
+                {
+                    CheckTableStructure(aModelTypes[i]);
                 }
                 _TablesChecked = true;
             }
@@ -113,7 +172,7 @@ namespace SQLiteORM
             if (aTableAttrs.Length == 0) return;
             var oTableAttr = (TableAttribute)aTableAttrs[0];
             string sTableName = GetFullTableName(oTableAttr);
-            var oTableLock = _tableLocks.GetOrAdd(sTableName, new object());
+            var oTableLock = _TableLocks.GetOrAdd(sTableName, new object());
             lock (oTableLock)
             {
                 if (_TableCheckCache.TryGetValue(oModelType, out bool bChecked) && bChecked)
@@ -132,6 +191,7 @@ namespace SQLiteORM
                 if (!bTableExists)
                 {
                     CreateTable(oModelType, sTableName, aProperties.ToList());
+                    _ColumnMappingCache.TryRemove(oModelType, out _);
                 }
                 else
                 {
@@ -148,10 +208,18 @@ namespace SQLiteORM
                             }
                         }
                     }
-                    var aMissingProperties = aProperties.Where(p => !aExistingColumns.Contains(p.Name)).ToList();
-                    if (aMissingProperties.Any())
+                    var aMissingProperties = new List<PropertyInfo>();
+                    for (int i = 0; i < aProperties.Length; i++)
+                    {
+                        if (!aExistingColumns.Contains(aProperties[i].Name))
+                        {
+                            aMissingProperties.Add(aProperties[i]);
+                        }
+                    }
+                    if (aMissingProperties.Count > 0)
                     {
                         AddMissingColumns(sTableName, aMissingProperties);
+                        _ColumnMappingCache.TryRemove(oModelType, out _);
                     }
                 }
                 CheckAndCreateIndexes(oModelType, sTableName);
@@ -161,31 +229,35 @@ namespace SQLiteORM
 
         private static void CreateTable(Type oModelType, string sTableName, List<PropertyInfo> aProperties)
         {
-            var aColumns = new List<string>();
+            var oBuilder = new StringBuilder();
+            oBuilder.Append($"CREATE TABLE {sTableName} (");
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(oModelType);
-            foreach (var oProp in aProperties)
+            bool bFirst = true;
+            for (int i = 0; i < aProperties.Count; i++)
             {
+                var oProp = aProperties[i];
+                if (!bFirst) oBuilder.Append(", ");
+                bFirst = false;
                 string sColumnType = GetSQLiteType(oProp.PropertyType);
-                string sColumnDefinition = $"{oProp.Name} {sColumnType}";
+                oBuilder.Append($"{oProp.Name} {sColumnType}");
                 if (oProp == oPrimaryKey)
                 {
                     if (IsAutoIncrementType(oProp.PropertyType))
                     {
-                        sColumnDefinition += " PRIMARY KEY AUTOINCREMENT";
+                        oBuilder.Append(" PRIMARY KEY AUTOINCREMENT");
                     }
                     else
                     {
-                        sColumnDefinition += " PRIMARY KEY";
+                        oBuilder.Append(" PRIMARY KEY");
                     }
                 }
                 else if (!IsNullableType(oProp.PropertyType))
                 {
-                    sColumnDefinition += " NOT NULL";
+                    oBuilder.Append(" NOT NULL");
                 }
-                aColumns.Add(sColumnDefinition);
             }
-            string sCreateTableSql = $"CREATE TABLE {sTableName} ({string.Join(", ", aColumns)})";
-            ExecuteNonQuery(sCreateTableSql);
+            oBuilder.Append(")");
+            ExecuteNonQuery(oBuilder.ToString());
         }
 
         private static void CheckAndCreateIndexes(Type oModelType, string sTableName)
@@ -207,12 +279,21 @@ namespace SQLiteORM
                         }
                     }
                 }
-                foreach (var oIndexInfo in aIndexInfos.Where(i => i.AutoCreate && !aExistingIndexes.Contains(i.Name)))
+                for (int i = 0; i < aIndexInfos.Count; i++)
                 {
-                    string sUnique = oIndexInfo.IsUnique ? "UNIQUE" : "";
-                    string sColumns = string.Join(", ", oIndexInfo.Properties.Select(p => $"{p}"));
-                    string sSql = $"CREATE {sUnique} INDEX {oIndexInfo.Name} ON {sTableName} ({sColumns})";
-                    ExecuteNonQuery(sSql);
+                    var oIndexInfo = aIndexInfos[i];
+                    if (oIndexInfo.AutoCreate && !aExistingIndexes.Contains(oIndexInfo.Name))
+                    {
+                        string sUnique = oIndexInfo.IsUnique ? "UNIQUE" : "";
+                        var oColumnBuilder = new StringBuilder();
+                        for (int j = 0; j < oIndexInfo.Properties.Count; j++)
+                        {
+                            if (j > 0) oColumnBuilder.Append(", ");
+                            oColumnBuilder.Append(oIndexInfo.Properties[j]);
+                        }
+                        string sSql = $"CREATE {sUnique} INDEX {oIndexInfo.Name} ON {sTableName} ({oColumnBuilder})";
+                        ExecuteNonQuery(sSql);
+                    }
                 }
             }
         }
@@ -223,35 +304,65 @@ namespace SQLiteORM
             {
                 var aIndexInfos = new List<IndexInfo>();
                 var aProperties = GetCachedProperties(type);
-                foreach (var oProp in aProperties)
+                for (int i = 0; i < aProperties.Length; i++)
                 {
-                    var aIndexAttrs = oProp.GetCustomAttributes(typeof(IndexAttribute), false)
-                        .Cast<IndexAttribute>()
-                        .Where(attr => attr.AutoCreate);
-                    foreach (var oIndexAttr in aIndexAttrs)
+                    var oProp = aProperties[i];
+                    var aIndexAttrs = oProp.GetCustomAttributes(typeof(IndexAttribute), false);
+                    for (int j = 0; j < aIndexAttrs.Length; j++)
                     {
-                        string sIndexName = string.IsNullOrEmpty(oIndexAttr.Name)
-                            ? $"IX_{GetCachedTableName(type)}_{oProp.Name}"
-                            : oIndexAttr.Name;
-                        aIndexInfos.Add(new IndexInfo
+                        var oIndexAttr = (IndexAttribute)aIndexAttrs[j];
+                        if (oIndexAttr.AutoCreate)
                         {
-                            Name = sIndexName,
-                            IsUnique = oIndexAttr.IsUnique,
-                            Properties = new List<string> { oProp.Name },
-                            AutoCreate = oIndexAttr.AutoCreate
-                        });
+                            string sIndexName = string.IsNullOrEmpty(oIndexAttr.Name)
+                                ? $"IX_{GetCachedTableName(type)}_{oProp.Name}"
+                                : oIndexAttr.Name;
+                            aIndexInfos.Add(new IndexInfo
+                            {
+                                Name = sIndexName,
+                                IsUnique = oIndexAttr.IsUnique,
+                                Properties = new List<string> { oProp.Name },
+                                AutoCreate = oIndexAttr.AutoCreate
+                            });
+                        }
                     }
                 }
-                var aGroupedIndexes = aIndexInfos.Where(i => !string.IsNullOrEmpty(i.Name))
-                    .GroupBy(i => i.Name)
-                    .Where(g => g.Count() > 1);
-                foreach (var oGroup in aGroupedIndexes)
+
+                var aGroupedIndexes = new Dictionary<string, List<IndexInfo>>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < aIndexInfos.Count; i++)
                 {
-                    var oFirst = oGroup.First();
-                    oFirst.Properties = oGroup
-                        .OrderBy(i => i.Properties.First()).SelectMany(i => i.Properties).ToList();
-                    aIndexInfos.RemoveAll(i => i.Name == oFirst.Name && i != oFirst);
+                    var indexInfo = aIndexInfos[i];
+                    if (!string.IsNullOrEmpty(indexInfo.Name))
+                    {
+                        List<IndexInfo> group;
+                        if (!aGroupedIndexes.TryGetValue(indexInfo.Name, out group))
+                        {
+                            group = new List<IndexInfo>();
+                            aGroupedIndexes[indexInfo.Name] = group;
+                        }
+                        group.Add(indexInfo);
+                    }
                 }
+
+                foreach (var group in aGroupedIndexes.Values)
+                {
+                    if (group.Count > 1)
+                    {
+                        var oFirst = group[0];
+                        var allProperties = new List<string>();
+                        for (int i = 0; i < group.Count; i++)
+                        {
+                            allProperties.AddRange(group[i].Properties);
+                        }
+                        allProperties.Sort(StringComparer.OrdinalIgnoreCase);
+                        oFirst.Properties = allProperties;
+
+                        for (int i = 1; i < group.Count; i++)
+                        {
+                            aIndexInfos.Remove(group[i]);
+                        }
+                    }
+                }
+
                 return aIndexInfos;
             });
         }
@@ -267,14 +378,20 @@ namespace SQLiteORM
             return _PrimaryKeyCache.GetOrAdd(oType, type =>
             {
                 var aProperties = GetCachedProperties(type);
-                var oIdentityKeyProperty = aProperties.FirstOrDefault(p =>
-                    p.GetCustomAttributes(typeof(IdentityKeyAttribute), false).Length > 0);
-                if (oIdentityKeyProperty != null)
-                    return oIdentityKeyProperty;
-                var oIdProperty = aProperties.FirstOrDefault(p =>
-                    string.Equals(p.Name, "Id", StringComparison.OrdinalIgnoreCase));
-                if (oIdProperty != null)
-                    return oIdProperty;
+                for (int i = 0; i < aProperties.Length; i++)
+                {
+                    if (aProperties[i].GetCustomAttributes(typeof(IdentityKeyAttribute), false).Length > 0)
+                    {
+                        return aProperties[i];
+                    }
+                }
+                for (int i = 0; i < aProperties.Length; i++)
+                {
+                    if (string.Equals(aProperties[i].Name, "Id", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return aProperties[i];
+                    }
+                }
                 throw new InvalidOperationException($"No primary key defined for type {type.Name}. Use [IdentityKey] attribute or name a property 'Id'.");
             });
         }
@@ -288,8 +405,9 @@ namespace SQLiteORM
                 {
                     try
                     {
-                        foreach (var oProp in aMissingProperties)
+                        for (int i = 0; i < aMissingProperties.Count; i++)
                         {
+                            var oProp = aMissingProperties[i];
                             string sColumnType = GetSQLiteType(oProp.PropertyType);
                             string sColumnDefinition = $"{oProp.Name} {sColumnType}";
                             if (!IsNullableType(oProp.PropertyType))
@@ -313,7 +431,19 @@ namespace SQLiteORM
 
         private static PropertyInfo[] GetCachedProperties(Type oType)
         {
-            return _PropertyCache.GetOrAdd(oType, type => type.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetCustomAttributes(typeof(IgnoreAttribute), false).Length == 0).ToArray());
+            return _PropertyCache.GetOrAdd(oType, type =>
+            {
+                var aProperties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance);
+                var aResult = new List<PropertyInfo>();
+                for (int i = 0; i < aProperties.Length; i++)
+                {
+                    if (aProperties[i].GetCustomAttributes(typeof(IgnoreAttribute), false).Length == 0)
+                    {
+                        aResult.Add(aProperties[i]);
+                    }
+                }
+                return aResult.ToArray();
+            });
         }
 
         private static string GetCachedTableName(Type oType)
@@ -349,7 +479,7 @@ namespace SQLiteORM
                 )
             );
             oDoc.Save(sConfigPath);
-        }        
+        }
 
         private static void EnsureDatabaseFileExists()
         {
@@ -366,7 +496,35 @@ namespace SQLiteORM
         private static SQLiteConnection GetConnection(string sDbPath = null)
         {
             string sPath = sDbPath ?? _oDefaultDbPath;
-            return new SQLiteConnection($"Data Source={sPath};Version=3;Journal Mode=WAL;");
+            SQLiteConnection connection;
+            if (_ConnectionPool.TryTake(out connection))
+            {
+                connection.ConnectionString = $"Data Source={sPath};Version=3;Journal Mode=WAL;";
+                return connection;
+            }
+            if (Interlocked.Increment(ref _ConnectionCount) <= MaxPoolSize)
+            {
+                return new SQLiteConnection($"Data Source={sPath};Version=3;Journal Mode=WAL;");
+            }
+            else
+            {
+                Interlocked.Decrement(ref _ConnectionCount);
+                return new SQLiteConnection($"Data Source={sPath};Version=3;Journal Mode=WAL;");
+            }
+        }
+
+        private static void ReturnConnection(SQLiteConnection connection)
+        {
+            if (connection != null)
+            {
+                try
+                {
+                    if (connection.State != System.Data.ConnectionState.Closed)
+                        connection.Close();
+                    _ConnectionPool.Add(connection);
+                }
+                catch { /* Ignore errors */ }
+            }
         }
 
         private static bool IsNullableType(Type oType)
@@ -391,10 +549,12 @@ namespace SQLiteORM
 
         private static void ExecuteNonQuery(string sSql, string sDbPath = null, Dictionary<string, object> oParameters = null)
         {
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
                 {
                     if (oParameters != null)
                     {
@@ -404,14 +564,21 @@ namespace SQLiteORM
                     oCommand.ExecuteNonQuery();
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
         }
 
         private static T ExecuteScalar<T>(string sSql, string sDbPath = null, Dictionary<string, object> oParameters = null)
         {
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
                 {
                     if (oParameters != null)
                     {
@@ -422,32 +589,62 @@ namespace SQLiteORM
                     return result != null ? (T)Convert.ChangeType(result, typeof(T)) : default(T);
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
+        }
+
+        private static CachedInsertInfo GetCachedInsertInfo<T>()
+        {
+            return _InsertInfoCache.GetOrAdd(typeof(T), type =>
+            {
+                PropertyInfo primaryKey = GetPrimaryKeyProperty(type);
+                PropertyInfo[] properties = GetCachedProperties(type)
+                    .Where(p => p != primaryKey || !IsAutoIncrementType(p.PropertyType)).ToArray();
+                string tableName = GetCachedTableName(type);
+                var columns = new StringBuilder();
+                var parameters = new StringBuilder();
+                var parameterNames = new string[properties.Length];
+                for (int i = 0; i < properties.Length; i++)
+                {
+                    if (i > 0)
+                    {
+                        columns.Append(", ");
+                        parameters.Append(", ");
+                    }
+                    columns.Append(properties[i].Name);
+                    parameterNames[i] = "@" + properties[i].Name;
+                    parameters.Append(parameterNames[i]);
+                }
+                string sql = $"INSERT INTO {tableName} ({columns}) VALUES ({parameters}); SELECT last_insert_rowid();";
+                return new CachedInsertInfo { Sql = sql, Properties = properties, ParameterNames = parameterNames };
+            });
         }
 
         public static int Insert<T>(T oEntity, string sDbPath = null) where T : class, new()
         {
             if (oEntity == null)
                 throw new ArgumentNullException(nameof(oEntity));
-            string sTableName = GetCachedTableName<T>();
+            CachedInsertInfo insertInfo = GetCachedInsertInfo<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T))
-            .Where(p => p != oPrimaryKey || !IsAutoIncrementType(p.PropertyType)).ToArray();
-            string sColumns = string.Join(", ", aProperties.Select(p => $"{p.Name}"));
-            string sParameters = string.Join(", ", aProperties.Select(p => "@" + p.Name));
-            string sSql = $"INSERT INTO {sTableName} ({sColumns}) VALUES ({sParameters}); SELECT last_insert_rowid();";
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(insertInfo.Sql, connection))
                 {
-                    foreach (PropertyInfo oProp in aProperties)
+                    for (int i = 0; i < insertInfo.Properties.Length; i++)
                     {
+                        var oProp = insertInfo.Properties[i];
                         object oValue = oProp.GetValue(oEntity, null) ?? DBNull.Value;
                         if (oProp.PropertyType == typeof(decimal) && oValue is decimal dVal)
                         {
                             oValue = dVal.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         }
-                        oCommand.Parameters.AddWithValue("@" + oProp.Name, oValue);
+                        oCommand.Parameters.AddWithValue(insertInfo.ParameterNames[i], oValue);
                     }
                     object result = oCommand.ExecuteScalar();
                     int iGeneratedId = Convert.ToInt32(result);
@@ -458,6 +655,11 @@ namespace SQLiteORM
                     return iGeneratedId;
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
         }
 
         public static int InsertList<T>(IEnumerable<T> oEntities, string sDbPath = null) where T : class, new()
@@ -466,32 +668,33 @@ namespace SQLiteORM
                 throw new ArgumentNullException(nameof(oEntities));
             if (!oEntities.Any())
                 return 0;
-            string sTableName = GetCachedTableName<T>();
+            CachedInsertInfo insertInfo = GetCachedInsertInfo<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T)).Where(p => p != oPrimaryKey || !IsAutoIncrementType(p.PropertyType)).ToArray();
-            string sColumns = string.Join(", ", aProperties.Select(p => $"{p.Name}"));
-            string sParameters = string.Join(", ", aProperties.Select(p => "@" + p.Name));
-            string sSql = $"INSERT INTO {sTableName} ({sColumns}) VALUES ({sParameters}); SELECT last_insert_rowid();";
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (var oTransaction = oConnection.BeginTransaction())
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (var oTransaction = connection.BeginTransaction())
                 {
                     int iCount = 0;
                     try
                     {
-                        foreach (var oEntity in oEntities)
+                        using (SQLiteCommand oCommand = new SQLiteCommand(insertInfo.Sql, connection, oTransaction))
                         {
-                            using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection, oTransaction))
+                            oCommand.Prepare();
+                            foreach (var oEntity in oEntities)
                             {
-                                foreach (PropertyInfo oProp in aProperties)
+                                oCommand.Parameters.Clear();
+                                for (int i = 0; i < insertInfo.Properties.Length; i++)
                                 {
+                                    var oProp = insertInfo.Properties[i];
                                     object oValue = oProp.GetValue(oEntity, null) ?? DBNull.Value;
                                     if (oProp.PropertyType == typeof(decimal) && oValue is decimal dVal)
                                     {
                                         oValue = dVal.ToString(System.Globalization.CultureInfo.InvariantCulture);
                                     }
-                                    oCommand.Parameters.AddWithValue("@" + oProp.Name, oValue);
+                                    oCommand.Parameters.AddWithValue(insertInfo.ParameterNames[i], oValue);
                                 }
                                 object oResult = oCommand.ExecuteScalar();
                                 int iGeneratedId = Convert.ToInt32(oResult);
@@ -512,37 +715,65 @@ namespace SQLiteORM
                     }
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
+        }
+
+        private static CachedUpdateInfo GetCachedUpdateInfo<T>()
+        {
+            return _UpdateInfoCache.GetOrAdd(typeof(T), type =>
+            {
+                PropertyInfo primaryKey = GetPrimaryKeyProperty(type);
+                PropertyInfo[] properties = GetCachedProperties(type).Where(p => p != primaryKey).ToArray();
+                string tableName = GetCachedTableName(type);
+                var setClause = new StringBuilder();
+                var parameterNames = new string[properties.Length];
+                for (int i = 0; i < properties.Length; i++)
+                {
+                    if (i > 0) setClause.Append(", ");
+                    setClause.Append(properties[i].Name).Append(" = @").Append(properties[i].Name);
+                    parameterNames[i] = "@" + properties[i].Name;
+                }
+                string sql = $"UPDATE {tableName} SET {setClause} WHERE {primaryKey.Name} = @PrimaryKey";
+                return new CachedUpdateInfo { Sql = sql, Properties = properties, ParameterNames = parameterNames };
+            });
         }
 
         public static bool Update<T>(T oEntity, string sDbPath = null) where T : class, new()
         {
             if (oEntity == null)
                 throw new ArgumentNullException(nameof(oEntity));
-            string sTableName = GetCachedTableName<T>();
+            CachedUpdateInfo updateInfo = GetCachedUpdateInfo<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
-            if (oPrimaryKey == null)
-                throw new InvalidOperationException("Entity must have a primary key property");
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T)).Where(p => p != oPrimaryKey).ToArray();
-            string sSetClause = string.Join(", ", aProperties.Select(p => $"{p.Name} = @{p.Name}"));
-            string sSql = $"UPDATE {sTableName} SET {sSetClause} WHERE {oPrimaryKey.Name} = @PrimaryKey";
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(updateInfo.Sql, connection))
                 {
-                    foreach (PropertyInfo oProp in aProperties)
+                    for (int i = 0; i < updateInfo.Properties.Length; i++)
                     {
+                        var oProp = updateInfo.Properties[i];
                         object oValue = oProp.GetValue(oEntity, null) ?? DBNull.Value;
                         if (oProp.PropertyType == typeof(decimal) && oValue is decimal dVal)
                         {
                             oValue = dVal.ToString(System.Globalization.CultureInfo.InvariantCulture);
                         }
-                        oCommand.Parameters.AddWithValue("@" + oProp.Name, oValue);
+                        oCommand.Parameters.AddWithValue(updateInfo.ParameterNames[i], oValue);
                     }
                     object oPrimaryKeyValue = oPrimaryKey.GetValue(oEntity, null) ?? DBNull.Value;
                     oCommand.Parameters.AddWithValue("@PrimaryKey", oPrimaryKeyValue);
                     return oCommand.ExecuteNonQuery() > 0;
                 }
+            }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
             }
         }
 
@@ -552,33 +783,33 @@ namespace SQLiteORM
                 throw new ArgumentNullException(nameof(oEntities));
             if (!oEntities.Any())
                 return 0;
-            string sTableName = GetCachedTableName<T>();
+            CachedUpdateInfo updateInfo = GetCachedUpdateInfo<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
-            if (oPrimaryKey == null)
-                throw new InvalidOperationException("Entity must have a primary key property");
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T)).Where(p => p != oPrimaryKey).ToArray();
-            string sSetClause = string.Join(", ", aProperties.Select(p => $"{p.Name} = @{p.Name}"));
-            string sSql = $"UPDATE {sTableName} SET {sSetClause} WHERE {oPrimaryKey.Name} = @PrimaryKey";
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (var oTransaction = oConnection.BeginTransaction())
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (var oTransaction = connection.BeginTransaction())
                 {
                     int iCount = 0;
                     try
                     {
-                        foreach (var oEntity in oEntities)
+                        using (SQLiteCommand oCommand = new SQLiteCommand(updateInfo.Sql, connection, oTransaction))
                         {
-                            using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection, oTransaction))
+                            oCommand.Prepare();
+                            foreach (var oEntity in oEntities)
                             {
-                                foreach (PropertyInfo oProp in aProperties)
+                                oCommand.Parameters.Clear();
+                                for (int i = 0; i < updateInfo.Properties.Length; i++)
                                 {
+                                    var oProp = updateInfo.Properties[i];
                                     object oValue = oProp.GetValue(oEntity, null) ?? DBNull.Value;
                                     if (oProp.PropertyType == typeof(decimal) && oValue is decimal dVal)
                                     {
                                         oValue = dVal.ToString(System.Globalization.CultureInfo.InvariantCulture);
                                     }
-                                    oCommand.Parameters.AddWithValue("@" + oProp.Name, oValue);
+                                    oCommand.Parameters.AddWithValue(updateInfo.ParameterNames[i], oValue);
                                 }
                                 object oPrimaryKeyValue = oPrimaryKey.GetValue(oEntity, null) ?? DBNull.Value;
                                 oCommand.Parameters.AddWithValue("@PrimaryKey", oPrimaryKeyValue);
@@ -595,6 +826,11 @@ namespace SQLiteORM
                     }
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
         }
 
         public static bool Delete<T>(int iId, string sDbPath = null) where T : class, new()
@@ -602,14 +838,21 @@ namespace SQLiteORM
             string sTableName = GetCachedTableName<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
             string sSql = $"DELETE FROM {sTableName} WHERE {oPrimaryKey.Name} = @PrimaryKey";
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
                 {
                     oCommand.Parameters.AddWithValue("@PrimaryKey", iId);
                     return oCommand.ExecuteNonQuery() > 0;
                 }
+            }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
             }
         }
 
@@ -621,19 +864,22 @@ namespace SQLiteORM
                 return 0;
             string sTableName = GetCachedTableName<T>();
             PropertyInfo oPrimaryKey = GetPrimaryKeyProperty(typeof(T));
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (var oTransaction = oConnection.BeginTransaction())
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (var oTransaction = connection.BeginTransaction())
                 {
                     int iCount = 0;
                     try
                     {
-                        foreach (int iId in aIds)
+                        using (SQLiteCommand oCommand = new SQLiteCommand($"DELETE FROM {sTableName} WHERE {oPrimaryKey.Name} = @PrimaryKey", connection, oTransaction))
                         {
-                            string sSql = $"DELETE FROM {sTableName} WHERE {oPrimaryKey.Name} = @PrimaryKey";
-                            using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection, oTransaction))
+                            oCommand.Prepare();
+                            foreach (int iId in aIds)
                             {
+                                oCommand.Parameters.Clear();
                                 oCommand.Parameters.AddWithValue("@PrimaryKey", iId);
                                 iCount += oCommand.ExecuteNonQuery();
                             }
@@ -648,6 +894,11 @@ namespace SQLiteORM
                     }
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
         }
 
         public static bool DeleteAll<T>(Expression<Func<T, bool>> oPredicate, string sDbPath = null) where T : class, new()
@@ -656,10 +907,12 @@ namespace SQLiteORM
             var oConverter = new ExpressionToSql<T>();
             var oSqlWithParams = oConverter.ConvertToSqlWithParameters(oPredicate);
             string sSql = $"DELETE FROM {sTableName} WHERE {oSqlWithParams.Sql}";
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
                 {
                     foreach (var oParam in oSqlWithParams.Parameters)
                     {
@@ -668,6 +921,89 @@ namespace SQLiteORM
                     return oCommand.ExecuteNonQuery() > 0;
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
+        }
+
+        private static Dictionary<string, ColumnMapping> GetColumnMappings(Type type)
+        {
+            return _ColumnMappingCache.GetOrAdd(type, t =>
+            {
+                var properties = GetCachedProperties(t);
+                var tableName = GetCachedTableName(t);
+                var mappings = new Dictionary<string, ColumnMapping>(StringComparer.OrdinalIgnoreCase);
+
+                using (var connection = GetConnection())
+                {
+                    connection.Open();
+                    using (var command = new SQLiteCommand($"PRAGMA table_info({tableName})", connection))
+                    using (var reader = command.ExecuteReader())
+                    {
+                        var columnNames = new List<string>();
+                        while (reader.Read())
+                        {
+                            columnNames.Add(reader["name"].ToString());
+                        }
+
+                        for (int i = 0; i < properties.Length; i++)
+                        {
+                            var prop = properties[i];
+                            int index = columnNames.IndexOf(prop.Name);
+                            if (index == -1) continue;
+
+                            mappings[prop.Name] = new ColumnMapping
+                            {
+                                Property = prop,
+                                ValueConverter = CreateValueConverter(prop.PropertyType),
+                                ColumnIndex = index
+                            };
+                        }
+                    }
+                }
+                return mappings;
+            });
+        }
+
+        private static Func<SQLiteDataReader, object> GetEntityCreator<T>()
+        {
+            return _EntityCreators.GetOrAdd(typeof(T), type =>
+            {
+                var readerParam = Expression.Parameter(typeof(SQLiteDataReader), "reader");
+                var entityVar = Expression.Variable(type, "entity");
+                var newExpr = Expression.New(type);
+                var assignEntity = Expression.Assign(entityVar, newExpr);
+                var blockExpressions = new List<Expression> { assignEntity };
+
+                var columnMappings = GetColumnMappings(type);
+
+                foreach (var mapping in columnMappings.Values)
+                {
+                    var prop = mapping.Property;
+                    var indexExpr = Expression.Constant(mapping.ColumnIndex);
+                    var isDBNullMethod = typeof(SQLiteDataReader).GetMethod("IsDBNull", new[] { typeof(int) });
+                    var isDBNullExpr = Expression.Call(readerParam, isDBNullMethod, indexExpr);
+                    var getValueMethod = typeof(SQLiteDataReader).GetMethod("GetValue", new[] { typeof(int) });
+                    var valueExpr = Expression.Call(readerParam, getValueMethod, indexExpr);
+                    var converter = mapping.ValueConverter;
+                    var convertedValueExpr = Expression.Call(
+                        Expression.Constant(converter),
+                        typeof(Func<object, object>).GetMethod("Invoke"),
+                        valueExpr);
+                    var typedValueExpr = Expression.Convert(convertedValueExpr, prop.PropertyType);
+                    var defaultValue = Expression.Default(prop.PropertyType);
+                    var conditionExpr = Expression.Condition(isDBNullExpr, defaultValue, typedValueExpr);
+                    var propertyExpr = Expression.Property(entityVar, prop);
+                    var assignExpr = Expression.Assign(propertyExpr, conditionExpr);
+                    blockExpressions.Add(assignExpr);
+                }
+
+                blockExpressions.Add(entityVar);
+                var block = Expression.Block(new[] { entityVar }, blockExpressions);
+                return Expression.Lambda<Func<SQLiteDataReader, object>>(block, readerParam).Compile();
+            });
         }
 
         public static T GetById<T>(int iId, string sDbPath = null) where T : class, new()
@@ -677,22 +1013,102 @@ namespace SQLiteORM
             {
                 throw new InvalidOperationException($"Type {typeof(T).Name} does not have a primary key property");
             }
-            ParameterExpression oParameter = Expression.Parameter(typeof(T), "e");
-            MemberExpression oPropertyAccess = Expression.Property(oParameter, oPrimaryKey);
-            ConstantExpression oConstantValue = Expression.Constant(iId);
-            BinaryExpression oEquality = Expression.Equal(oPropertyAccess, oConstantValue);
-            Expression<Func<T, bool>> oLambda = Expression.Lambda<Func<T, bool>>(oEquality, oParameter);
-            return Find<T>(oLambda, sDbPath).FirstOrDefault();
+            string sTableName = GetCachedTableName<T>();
+            string sSql = $"SELECT * FROM {sTableName} WHERE {oPrimaryKey.Name} = @Id";
+            var entityCreator = GetEntityCreator<T>();
+            SQLiteConnection connection = null;
+            try
+            {
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
+                {
+                    oCommand.Parameters.AddWithValue("@Id", iId);
+                    using (SQLiteDataReader oReader = oCommand.ExecuteReader())
+                    {
+                        if (oReader.Read())
+                        {
+                            return (T)entityCreator(oReader);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
+            return null;
         }
 
         public static IEnumerable<T> GetAll<T>(string sDbPath = null) where T : class, new()
         {
-            return Find<T>(e => true, sDbPath);
+            string sTableName = GetCachedTableName<T>();
+            string sSql = $"SELECT * FROM {sTableName}";
+            var entityCreator = GetEntityCreator<T>();
+            var results = new List<T>();
+            SQLiteConnection connection = null;
+            try
+            {
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
+                {
+                    using (SQLiteDataReader oReader = oCommand.ExecuteReader())
+                    {
+                        while (oReader.Read())
+                        {
+                            results.Add((T)entityCreator(oReader));
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
+            return results;
         }
 
         public static T GetSingle<T>(Expression<Func<T, bool>> oPredicate, string sDbPath = null) where T : class, new()
         {
-            return Find<T>(oPredicate, sDbPath).FirstOrDefault();
+            string sTableName = GetCachedTableName<T>();
+            var oConverter = new ExpressionToSql<T>();
+            var oSqlWithParams = oConverter.ConvertToSqlWithParameters(oPredicate);
+            string sSql = $"SELECT * FROM {sTableName}";
+            if (!string.IsNullOrEmpty(oSqlWithParams.Sql) && oSqlWithParams.Sql != "1=1")
+            {
+                sSql += $" WHERE {oSqlWithParams.Sql}";
+            }
+            sSql += " LIMIT 1";
+            var entityCreator = GetEntityCreator<T>();
+            SQLiteConnection connection = null;
+            try
+            {
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
+                {
+                    foreach (var oParam in oSqlWithParams.Parameters)
+                    {
+                        oCommand.Parameters.AddWithValue(oParam.Key, oParam.Value ?? DBNull.Value);
+                    }
+                    using (SQLiteDataReader oReader = oCommand.ExecuteReader())
+                    {
+                        if (oReader.Read())
+                        {
+                            return (T)entityCreator(oReader);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
+            return null;
         }
 
         public static IEnumerable<T> Find<T>(Expression<Func<T, bool>> oPredicate, string sDbPath = null) where T : class, new()
@@ -705,12 +1121,14 @@ namespace SQLiteORM
             {
                 sSql += $" WHERE {oSqlWithParams.Sql}";
             }
-            List<T> oResults = new List<T>();
-            PropertyInfo[] aProperties = GetCachedProperties(typeof(T));
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            var entityCreator = GetEntityCreator<T>();
+            var results = new List<T>();
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
                 {
                     foreach (var oParam in oSqlWithParams.Parameters)
                     {
@@ -720,43 +1138,17 @@ namespace SQLiteORM
                     {
                         while (oReader.Read())
                         {
-                            T oEntity = new T();
-                            for (int iIndex = 0; iIndex < oReader.FieldCount; iIndex++)
-                            {
-                                string sFieldName = oReader.GetName(iIndex);
-                                PropertyInfo oProp = Array.Find(aProperties, p =>
-                                    p.Name.Equals(sFieldName, StringComparison.OrdinalIgnoreCase));
-                                if (oProp != null && !oReader.IsDBNull(iIndex))
-                                {
-                                    try
-                                    {
-                                        object oValue = oReader.GetValue(iIndex);
-                                        if (oProp.PropertyType == typeof(bool) && oValue is long lVal)
-                                            oValue = lVal != 0;
-                                        else if (oProp.PropertyType == typeof(byte[]))
-                                            oValue = oValue;
-                                        else if (oProp.PropertyType == typeof(Guid) && oValue is string sGuid)
-                                            oValue = Guid.Parse(sGuid);
-                                        else if (oProp.PropertyType == typeof(TimeSpan) && oValue is string sTimeSpan)
-                                            oValue = TimeSpan.Parse(sTimeSpan);
-                                        else if (oProp.PropertyType == typeof(decimal) && oValue is string sDecimal)
-                                            oValue = decimal.Parse(sDecimal, System.Globalization.CultureInfo.InvariantCulture);
-                                        else
-                                            oValue = Convert.ChangeType(oValue, Nullable.GetUnderlyingType(oProp.PropertyType) ?? oProp.PropertyType);
-                                        oProp.SetValue(oEntity, oValue, null);
-                                    }
-                                    catch (Exception oEx)
-                                    {
-                                        throw new InvalidOperationException($"Failed to set value for property {oProp.Name}: {oEx.Message}", oEx);
-                                    }
-                                }
-                            }
-                            oResults.Add(oEntity);
+                            results.Add((T)entityCreator(oReader));
                         }
                     }
                 }
             }
-            return oResults;
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
+            return results;
         }
 
         public static int Count<T>(Expression<Func<T, bool>> oPredicate, string sDbPath = null) where T : class, new()
@@ -769,10 +1161,12 @@ namespace SQLiteORM
             {
                 sSql += $" WHERE {oSqlWithParams.Sql}";
             }
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
-                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, oConnection))
+                connection = GetConnection(sDbPath);
+                connection.Open();
+                using (SQLiteCommand oCommand = new SQLiteCommand(sSql, connection))
                 {
                     foreach (var oParam in oSqlWithParams.Parameters)
                     {
@@ -781,17 +1175,24 @@ namespace SQLiteORM
                     return Convert.ToInt32(oCommand.ExecuteScalar());
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
         }
 
         public static bool RemoveColumn(string sTableName, string sColumnName, string sDbPath = null)
         {
             try
             {
-                using (SQLiteConnection oConnection = GetConnection(sDbPath))
+                SQLiteConnection connection = null;
+                try
                 {
-                    oConnection.Open();
+                    connection = GetConnection(sDbPath);
+                    connection.Open();
                     var aColumns = new List<string>();
-                    using (var oCommand = new SQLiteCommand($"PRAGMA table_info({sTableName})", oConnection))
+                    using (var oCommand = new SQLiteCommand($"PRAGMA table_info({sTableName})", connection))
                     using (var oReader = oCommand.ExecuteReader())
                     {
                         while (oReader.Read())
@@ -806,11 +1207,34 @@ namespace SQLiteORM
                     if (aColumns.Count == 0)
                         throw new InvalidOperationException("No columns to keep");
                     string sTempTableName = $"{sTableName}_temp";
-                    string sCreateTempTableSql = $"CREATE TABLE {sTempTableName} AS SELECT {string.Join(", ", aColumns.Select(c => $"{c}"))} FROM {sTableName}";
+                    var oBuilder = new StringBuilder();
+                    oBuilder.Append("CREATE TABLE ").Append(sTempTableName).Append(" AS SELECT ");
+                    for (int i = 0; i < aColumns.Count; i++)
+                    {
+                        if (i > 0) oBuilder.Append(", ");
+                        oBuilder.Append(aColumns[i]);
+                    }
+                    oBuilder.Append(" FROM ").Append(sTableName);
+                    string sCreateTempTableSql = oBuilder.ToString();
                     ExecuteNonQuery(sCreateTempTableSql, sDbPath);
                     ExecuteNonQuery($"DROP TABLE {sTableName}", sDbPath);
                     ExecuteNonQuery($"ALTER TABLE {sTempTableName} RENAME TO {sTableName}", sDbPath);
+
+                    // Clear column mapping cache for all types that map to this table
+                    foreach (var kvp in _TableNameCache)
+                    {
+                        if (kvp.Value.Equals(sTableName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _ColumnMappingCache.TryRemove(kvp.Key, out _);
+                        }
+                    }
+
                     return true;
+                }
+                finally
+                {
+                    if (connection != null)
+                        ReturnConnection(connection);
                 }
             }
             catch (Exception oEx)
@@ -870,12 +1294,14 @@ namespace SQLiteORM
         {
             try
             {
-                using (SQLiteConnection oConnection = GetConnection(sDbPath))
+                SQLiteConnection connection = null;
+                try
                 {
-                    oConnection.Open();
+                    connection = GetConnection(sDbPath);
+                    connection.Open();
                     var aIndexNames = new List<string>();
                     using (var oCommand = new SQLiteCommand(
-                        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=@tableName", oConnection))
+                        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=@tableName", connection))
                     {
                         oCommand.Parameters.AddWithValue("@tableName", sTableName);
                         using (var oReader = oCommand.ExecuteReader())
@@ -886,12 +1312,17 @@ namespace SQLiteORM
                             }
                         }
                     }
-                    foreach (string sIndexName in aIndexNames)
+                    for (int i = 0; i < aIndexNames.Count; i++)
                     {
-                        string sSql = $"DROP INDEX {sIndexName}";
+                        string sSql = $"DROP INDEX {aIndexNames[i]}";
                         ExecuteNonQuery(sSql, sDbPath);
                     }
                     return true;
+                }
+                finally
+                {
+                    if (connection != null)
+                        ReturnConnection(connection);
                 }
             }
             catch (Exception oEx)
@@ -918,11 +1349,13 @@ namespace SQLiteORM
         public static List<string> GetIndexesForTable(string sTableName, string sDbPath = null)
         {
             var aIndexNames = new List<string>();
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
+                connection = GetConnection(sDbPath);
+                connection.Open();
                 using (var oCommand = new SQLiteCommand(
-                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=@tableName", oConnection))
+                    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=@tableName", connection))
                 {
                     oCommand.Parameters.AddWithValue("@tableName", sTableName);
                     using (var oReader = oCommand.ExecuteReader())
@@ -934,43 +1367,87 @@ namespace SQLiteORM
                     }
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
             return aIndexNames;
         }
 
         public static bool IndexExists(string sIndexName, string sDbPath = null)
         {
-            using (SQLiteConnection oConnection = GetConnection(sDbPath))
+            SQLiteConnection connection = null;
+            try
             {
-                oConnection.Open();
+                connection = GetConnection(sDbPath);
+                connection.Open();
                 using (var oCommand = new SQLiteCommand(
-                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=@indexName", oConnection))
+                    "SELECT 1 FROM sqlite_master WHERE type='index' AND name=@indexName", connection))
                 {
                     oCommand.Parameters.AddWithValue("@indexName", sIndexName);
                     return oCommand.ExecuteScalar() != null;
                 }
             }
+            finally
+            {
+                if (connection != null)
+                    ReturnConnection(connection);
+            }
         }
 
         private static string GetPropertyName<T>(Expression<Func<T, object>> oPropertySelector)
         {
-            if (oPropertySelector.Body is MemberExpression oMember)
+            var body = oPropertySelector.Body;
+            MemberExpression memberExpression;
+            if (body is MemberExpression)
             {
-                return oMember.Member.Name;
+                memberExpression = (MemberExpression)body;
             }
-            if (oPropertySelector.Body is UnaryExpression oUnary && oUnary.Operand is MemberExpression oMemberOperand)
+            else if (body is UnaryExpression)
             {
-                return oMemberOperand.Member.Name;
+                memberExpression = (MemberExpression)((UnaryExpression)body).Operand;
             }
-            throw new ArgumentException("Invalid property expression");
+            else
+            {
+                throw new ArgumentException("Invalid property expression");
+            }
+            return memberExpression.Member.Name;
         }
         #endregion
-        //نگه داری اطلاعات ایندکس ها
-        private class IndexInfo
+
+        private static Func<object, object> CreateValueConverter(Type targetType)
         {
-            public string Name { get; set; }
-            public bool IsUnique { get; set; }
-            public List<string> Properties { get; set; }
-            public bool AutoCreate { get; set; }
+            return _ValueConvertersCache.GetOrAdd(targetType, type =>
+            {
+                Type underlyingType = Nullable.GetUnderlyingType(type) ?? type;
+                if (underlyingType == typeof(bool))
+                    return value => value == null ? null : (object)(Convert.ToInt64(value) != 0);
+                else if (underlyingType == typeof(byte[]))
+                    return value => value;
+                else if (underlyingType == typeof(Guid))
+                    return value => value == null ? null : (object)Guid.Parse(value.ToString());
+                else if (underlyingType == typeof(TimeSpan))
+                    return value => value == null ? null : (object)TimeSpan.Parse(value.ToString());
+                else if (underlyingType == typeof(decimal))
+                    return value => value == null ? null : (object)decimal.Parse(value.ToString(), System.Globalization.CultureInfo.InvariantCulture);
+                else if (underlyingType == typeof(int))
+                    return value => value == null ? null : (object)Convert.ToInt32(value);
+                else if (underlyingType == typeof(long))
+                    return value => value == null ? null : (object)Convert.ToInt64(value);
+                else if (underlyingType == typeof(short))
+                    return value => value == null ? null : (object)Convert.ToInt16(value);
+                else if (underlyingType == typeof(byte))
+                    return value => value == null ? null : (object)Convert.ToByte(value);
+                else if (underlyingType == typeof(float))
+                    return value => value == null ? null : (object)Convert.ToSingle(value);
+                else if (underlyingType == typeof(double))
+                    return value => value == null ? null : (object)Convert.ToDouble(value);
+                else if (underlyingType == typeof(string))
+                    return value => value == null ? null : (object)value.ToString();
+                else
+                    return value => value == null ? null : Convert.ChangeType(value, underlyingType);
+            });
         }
     }
 }
