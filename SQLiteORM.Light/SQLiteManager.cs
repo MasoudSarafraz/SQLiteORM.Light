@@ -47,27 +47,27 @@ namespace SQLiteORM
 
     internal static class SQLiteConfiguration
     {
-        internal static string DefaultDbPath;
-        private const string DefaultDbFileName = "Database.sqlite";
-        private const string ConfigFileName = "AppConfig.xml";
-        private static readonly object ConfigLock = new object();
-        private static bool TablesChecked = false;
-        private static readonly object TableCheckLock = new object();
+        internal static string _DefaultDbPath;
+        private const string _DefaultDbFileName = "Database.sqlite";
+        private const string _ConfigFileName = "AppConfig.xml";
+        private static readonly object _ConfigLock = new object();
+        private static bool _TablesChecked = false;
+        private static readonly object _TableCheckLock = new object();
 
         internal static void Initialize()
         {
-            lock (ConfigLock)
+            lock (_ConfigLock)
             {
                 try
                 {
                     string sConfigPath = GetConfigPath();
                     if (!File.Exists(sConfigPath)) CreateDefaultConfig(sConfigPath);
                     XDocument oDoc = XDocument.Load(sConfigPath);
-                    string sDatabaseName = oDoc.Root?.Element("DatabaseName")?.Value ?? DefaultDbFileName;
+                    string sDatabaseName = oDoc.Root?.Element("DatabaseName")?.Value ?? _DefaultDbFileName;
                     string sDatabasePath = oDoc.Root?.Element("DatabasePath")?.Value;
                     if (string.IsNullOrWhiteSpace(sDatabaseName)) throw new InvalidOperationException("Database name not specified in config file");
                     if (string.IsNullOrWhiteSpace(sDatabasePath) || sDatabasePath == "." || sDatabasePath.Equals("default", StringComparison.OrdinalIgnoreCase)) sDatabasePath = AppDomain.CurrentDomain.BaseDirectory;
-                    DefaultDbPath = Path.Combine(sDatabasePath, sDatabaseName);
+                    _DefaultDbPath = Path.Combine(sDatabasePath, sDatabaseName);
                     EnsureDatabaseFileExists();
                     CheckAllTableStructures();
                 }
@@ -78,10 +78,10 @@ namespace SQLiteORM
         internal static void SetDefaultDatabasePath(string sDbFileName, string sDbPath = null)
         {
             if (string.IsNullOrWhiteSpace(sDbFileName)) throw new ArgumentNullException(nameof(sDbFileName));
-            lock (ConfigLock)
+            lock (_ConfigLock)
             {
                 string sBasePath = sDbPath ?? AppDomain.CurrentDomain.BaseDirectory;
-                DefaultDbPath = Path.Combine(sBasePath, sDbFileName);
+                _DefaultDbPath = Path.Combine(sBasePath, sDbFileName);
                 EnsureDatabaseFileExists();
                 CheckAllTableStructures();
             }
@@ -89,10 +89,10 @@ namespace SQLiteORM
 
         private static void CheckAllTableStructures()
         {
-            if (TablesChecked) return;
-            lock (TableCheckLock)
+            if (_TablesChecked) return;
+            lock (_TableCheckLock)
             {
-                if (TablesChecked) return;
+                if (_TablesChecked) return;
                 var lModelTypes = new List<Type>();
                 var aAssemblies = AppDomain.CurrentDomain.GetAssemblies();
                 for (int i = 0; i < aAssemblies.Length; i++)
@@ -112,49 +112,49 @@ namespace SQLiteORM
                 {
                     SQLiteSchemaManager.CheckTableStructure(lModelTypes[i]);
                 }
-                TablesChecked = true;
+                _TablesChecked = true;
             }
         }
 
         private static string GetConfigPath()
         {
             string oDllDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? throw new InvalidOperationException("Unable to determine assembly location");
-            string sConfigPath = Path.Combine(oDllDirectory, ConfigFileName);
-            return File.Exists(sConfigPath) ? sConfigPath : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, ConfigFileName);
+            string sConfigPath = Path.Combine(oDllDirectory, _ConfigFileName);
+            return File.Exists(sConfigPath) ? sConfigPath : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, _ConfigFileName);
         }
 
-        private static void CreateDefaultConfig(string sConfigPath) => new XDocument(new XElement("DatabaseConfig", new XElement("DatabaseName", DefaultDbFileName), new XElement("DatabasePath", "."))).Save(sConfigPath);
+        private static void CreateDefaultConfig(string sConfigPath) => new XDocument(new XElement("DatabaseConfig", new XElement("DatabaseName", _DefaultDbFileName), new XElement("DatabasePath", "."))).Save(sConfigPath);
 
         private static void EnsureDatabaseFileExists()
         {
-            string sDirectory = Path.GetDirectoryName(DefaultDbPath);
+            string sDirectory = Path.GetDirectoryName(_DefaultDbPath);
             if (!string.IsNullOrEmpty(sDirectory) && !Directory.Exists(sDirectory)) Directory.CreateDirectory(sDirectory);
-            if (!File.Exists(DefaultDbPath)) System.Data.SQLite.SQLiteConnection.CreateFile(DefaultDbPath);
+            if (!File.Exists(_DefaultDbPath)) System.Data.SQLite.SQLiteConnection.CreateFile(_DefaultDbPath);
         }
     }
 
     internal static class SQLiteConnectionManager
     {
-        private static readonly List<SQLiteConnection> ConnectionPool = new List<SQLiteConnection>();
-        private static readonly object ConnectionPoolLock = new object();
-        private const int MaxPoolSize = 100;
-        private static int ConnectionCount = 0;
+        private static readonly List<SQLiteConnection> _ConnectionPool = new List<SQLiteConnection>();
+        private static readonly object _ConnectionPoolLock = new object();
+        private const int _MaxPoolSize = 100;
+        private static int _ConnectionCount = 0;
 
         internal static SQLiteConnection GetConnection(string sDbPath = null)
         {
-            string sPath = sDbPath ?? SQLiteConfiguration.DefaultDbPath;
-            lock (ConnectionPoolLock)
+            string sPath = sDbPath ?? SQLiteConfiguration._DefaultDbPath;
+            lock (_ConnectionPoolLock)
             {
-                if (ConnectionPool.Count > 0)
+                if (_ConnectionPool.Count > 0)
                 {
-                    var oConnection = ConnectionPool[0];
-                    ConnectionPool.RemoveAt(0);
+                    var oConnection = _ConnectionPool[0];
+                    _ConnectionPool.RemoveAt(0);
                     oConnection.ConnectionString = $"Data Source={sPath};Version=3;Journal Mode=WAL;";
                     return oConnection;
                 }
             }
-            if (Interlocked.Increment(ref ConnectionCount) <= MaxPoolSize) return new SQLiteConnection($"Data Source={sPath};Version=3;Journal Mode=WAL;");
-            Interlocked.Decrement(ref ConnectionCount);
+            if (Interlocked.Increment(ref _ConnectionCount) <= _MaxPoolSize) return new SQLiteConnection($"Data Source={sPath};Version=3;Journal Mode=WAL;");
+            Interlocked.Decrement(ref _ConnectionCount);
             return new SQLiteConnection($"Data Source={sPath};Version=3;Journal Mode=WAL;");
         }
 
@@ -165,9 +165,9 @@ namespace SQLiteORM
                 try
                 {
                     if (oConnection.State != System.Data.ConnectionState.Closed) oConnection.Close();
-                    lock (ConnectionPoolLock)
+                    lock (_ConnectionPoolLock)
                     {
-                        ConnectionPool.Add(oConnection);
+                        _ConnectionPool.Add(oConnection);
                     }
                 }
                 catch { /* Ignore errors */ }
@@ -177,58 +177,58 @@ namespace SQLiteORM
 
     internal static class SQLiteMetadataCache
     {
-        private static readonly Dictionary<Type, Lazy<bool>> TableCheckCache = new Dictionary<Type, Lazy<bool>>();
-        private static readonly object TableCheckCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<PropertyInfo[]>> PropertyCache = new Dictionary<Type, Lazy<PropertyInfo[]>>();
-        private static readonly object PropertyCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<string>> TableNameCache = new Dictionary<Type, Lazy<string>>();
-        private static readonly object TableNameCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<PropertyInfo>> PrimaryKeyCache = new Dictionary<Type, Lazy<PropertyInfo>>();
-        private static readonly object PrimaryKeyCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<List<IndexInfo>>> IndexCache = new Dictionary<Type, Lazy<List<IndexInfo>>>();
-        private static readonly object IndexCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<CachedInsertInfo>> InsertInfoCache = new Dictionary<Type, Lazy<CachedInsertInfo>>();
-        private static readonly object InsertInfoCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<CachedUpdateInfo>> UpdateInfoCache = new Dictionary<Type, Lazy<CachedUpdateInfo>>();
-        private static readonly object UpdateInfoCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<Dictionary<string, ColumnMapping>>> ColumnMappingCache = new Dictionary<Type, Lazy<Dictionary<string, ColumnMapping>>>();
-        private static readonly object ColumnMappingCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<Func<SQLiteDataReader, object>>> EntityCreators = new Dictionary<Type, Lazy<Func<SQLiteDataReader, object>>>();
-        private static readonly object EntityCreatorsLock = new object();
-        private static readonly Dictionary<Type, Lazy<Func<object, object>>> ValueConvertersCache = new Dictionary<Type, Lazy<Func<object, object>>>();
-        private static readonly object ValueConvertersCacheLock = new object();
-        private static readonly Dictionary<string, object> TableLocks = new Dictionary<string, object>();
-        private static readonly object TableLocksLock = new object();
+        private static readonly Dictionary<Type, Lazy<bool>> _TableCheckCache = new Dictionary<Type, Lazy<bool>>();
+        private static readonly object _TableCheckCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<PropertyInfo[]>> _PropertyCache = new Dictionary<Type, Lazy<PropertyInfo[]>>();
+        private static readonly object _PropertyCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<string>> _TableNameCache = new Dictionary<Type, Lazy<string>>();
+        private static readonly object _TableNameCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<PropertyInfo>> _PrimaryKeyCache = new Dictionary<Type, Lazy<PropertyInfo>>();
+        private static readonly object _PrimaryKeyCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<List<IndexInfo>>> _IndexCache = new Dictionary<Type, Lazy<List<IndexInfo>>>();
+        private static readonly object _IndexCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<CachedInsertInfo>> _InsertInfoCache = new Dictionary<Type, Lazy<CachedInsertInfo>>();
+        private static readonly object _InsertInfoCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<CachedUpdateInfo>> _UpdateInfoCache = new Dictionary<Type, Lazy<CachedUpdateInfo>>();
+        private static readonly object _UpdateInfoCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<Dictionary<string, ColumnMapping>>> _ColumnMappingCache = new Dictionary<Type, Lazy<Dictionary<string, ColumnMapping>>>();
+        private static readonly object _ColumnMappingCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<Func<SQLiteDataReader, object>>> _EntityCreators = new Dictionary<Type, Lazy<Func<SQLiteDataReader, object>>>();
+        private static readonly object _EntityCreatorsLock = new object();
+        private static readonly Dictionary<Type, Lazy<Func<object, object>>> _ValueConvertersCache = new Dictionary<Type, Lazy<Func<object, object>>>();
+        private static readonly object _ValueConvertersCacheLock = new object();
+        private static readonly Dictionary<string, object> _TableLocks = new Dictionary<string, object>();
+        private static readonly object _TableLocksLock = new object();
 
         internal static bool IsTableChecked(Type oModelType)
         {
-            lock (TableCheckCacheLock) { return TableCheckCache.TryGetValue(oModelType, out var oLazy) && oLazy.Value; }
+            lock (_TableCheckCacheLock) { return _TableCheckCache.TryGetValue(oModelType, out var oLazy) && oLazy.Value; }
         }
 
         internal static void MarkTableAsChecked(Type oModelType)
         {
-            lock (TableCheckCacheLock)
+            lock (_TableCheckCacheLock)
             {
-                if (!TableCheckCache.ContainsKey(oModelType))
+                if (!_TableCheckCache.ContainsKey(oModelType))
                 {
-                    TableCheckCache[oModelType] = new Lazy<bool>(() => true, LazyThreadSafetyMode.ExecutionAndPublication);
+                    _TableCheckCache[oModelType] = new Lazy<bool>(() => true, LazyThreadSafetyMode.ExecutionAndPublication);
                 }
             }
         }
 
         internal static void InvalidateColumnMappingCache(Type oModelType)
         {
-            lock (ColumnMappingCacheLock) { ColumnMappingCache.Remove(oModelType); }
+            lock (_ColumnMappingCacheLock) { _ColumnMappingCache.Remove(oModelType); }
         }
 
         internal static PropertyInfo[] GetCachedProperties(Type oType)
         {
-            lock (PropertyCacheLock)
+            lock (_PropertyCacheLock)
             {
-                if (!PropertyCache.TryGetValue(oType, out var oLazy))
+                if (!_PropertyCache.TryGetValue(oType, out var oLazy))
                 {
                     oLazy = new Lazy<PropertyInfo[]>(() => oType.GetProperties(BindingFlags.Public | BindingFlags.Instance).Where(p => p.GetCustomAttributes(typeof(IgnoreAttribute), false).Length == 0).ToArray(), LazyThreadSafetyMode.ExecutionAndPublication);
-                    PropertyCache[oType] = oLazy;
+                    _PropertyCache[oType] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -236,16 +236,16 @@ namespace SQLiteORM
 
         internal static string GetCachedTableName(Type oType)
         {
-            lock (TableNameCacheLock)
+            lock (_TableNameCacheLock)
             {
-                if (!TableNameCache.TryGetValue(oType, out var oLazy))
+                if (!_TableNameCache.TryGetValue(oType, out var oLazy))
                 {
                     oLazy = new Lazy<string>(() =>
                     {
                         var aTableAttrs = (TableAttribute[])oType.GetCustomAttributes(typeof(TableAttribute), false);
                         return aTableAttrs.Length == 0 ? oType.Name : aTableAttrs[0].Name;
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    TableNameCache[oType] = oLazy;
+                    _TableNameCache[oType] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -253,9 +253,9 @@ namespace SQLiteORM
 
         internal static PropertyInfo GetPrimaryKeyProperty(Type oType)
         {
-            lock (PrimaryKeyCacheLock)
+            lock (_PrimaryKeyCacheLock)
             {
-                if (!PrimaryKeyCache.TryGetValue(oType, out var oLazy))
+                if (!_PrimaryKeyCache.TryGetValue(oType, out var oLazy))
                 {
                     oLazy = new Lazy<PropertyInfo>(() =>
                     {
@@ -270,7 +270,7 @@ namespace SQLiteORM
                         }
                         throw new InvalidOperationException($"No primary key defined for type {oType.Name}. Use [IdentityKey] attribute or name a property 'Id'.");
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    PrimaryKeyCache[oType] = oLazy;
+                    _PrimaryKeyCache[oType] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -278,9 +278,9 @@ namespace SQLiteORM
 
         internal static List<IndexInfo> GetCachedIndexes(Type oType)
         {
-            lock (IndexCacheLock)
+            lock (_IndexCacheLock)
             {
-                if (!IndexCache.TryGetValue(oType, out var oLazy))
+                if (!_IndexCache.TryGetValue(oType, out var oLazy))
                 {
                     oLazy = new Lazy<List<IndexInfo>>(() =>
                     {
@@ -298,7 +298,7 @@ namespace SQLiteORM
                         }
                         return lIndexInfos;
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    IndexCache[oType] = oLazy;
+                    _IndexCache[oType] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -306,9 +306,9 @@ namespace SQLiteORM
 
         internal static CachedInsertInfo GetCachedInsertInfo<T>()
         {
-            lock (InsertInfoCacheLock)
+            lock (_InsertInfoCacheLock)
             {
-                if (!InsertInfoCache.TryGetValue(typeof(T), out var oLazy))
+                if (!_InsertInfoCache.TryGetValue(typeof(T), out var oLazy))
                 {
                     oLazy = new Lazy<CachedInsertInfo>(() =>
                     {
@@ -326,7 +326,7 @@ namespace SQLiteORM
                         }
                         return new CachedInsertInfo { Sql = $"INSERT INTO {GetCachedTableName(typeof(T))} ({oColumns}) VALUES ({oParameters}); SELECT last_insert_rowid();", Properties = aProperties, ParameterNames = aParameterNames };
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    InsertInfoCache[typeof(T)] = oLazy;
+                    _InsertInfoCache[typeof(T)] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -334,9 +334,9 @@ namespace SQLiteORM
 
         internal static CachedUpdateInfo GetCachedUpdateInfo<T>()
         {
-            lock (UpdateInfoCacheLock)
+            lock (_UpdateInfoCacheLock)
             {
-                if (!UpdateInfoCache.TryGetValue(typeof(T), out var oLazy))
+                if (!_UpdateInfoCache.TryGetValue(typeof(T), out var oLazy))
                 {
                     oLazy = new Lazy<CachedUpdateInfo>(() =>
                     {
@@ -352,7 +352,7 @@ namespace SQLiteORM
                         }
                         return new CachedUpdateInfo { Sql = $"UPDATE {GetCachedTableName(typeof(T))} SET {oSetClause} WHERE {oPrimaryKey.Name} = @PrimaryKey", Properties = aProperties, ParameterNames = aParameterNames };
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    UpdateInfoCache[typeof(T)] = oLazy;
+                    _UpdateInfoCache[typeof(T)] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -360,9 +360,9 @@ namespace SQLiteORM
 
         internal static Dictionary<string, ColumnMapping> GetColumnMappings(Type oType)
         {
-            lock (ColumnMappingCacheLock)
+            lock (_ColumnMappingCacheLock)
             {
-                if (!ColumnMappingCache.TryGetValue(oType, out var oLazy))
+                if (!_ColumnMappingCache.TryGetValue(oType, out var oLazy))
                 {
                     oLazy = new Lazy<Dictionary<string, ColumnMapping>>(() =>
                     {
@@ -387,7 +387,7 @@ namespace SQLiteORM
                         }
                         return oMappings;
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    ColumnMappingCache[oType] = oLazy;
+                    _ColumnMappingCache[oType] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -395,9 +395,9 @@ namespace SQLiteORM
 
         internal static Func<SQLiteDataReader, object> GetEntityCreator<T>()
         {
-            lock (EntityCreatorsLock)
+            lock (_EntityCreatorsLock)
             {
-                if (!EntityCreators.TryGetValue(typeof(T), out var oLazy))
+                if (!_EntityCreators.TryGetValue(typeof(T), out var oLazy))
                 {
                     oLazy = new Lazy<Func<SQLiteDataReader, object>>(() =>
                     {
@@ -419,7 +419,7 @@ namespace SQLiteORM
                         lBlockExpressions.Add(oEntityVar);
                         return Expression.Lambda<Func<SQLiteDataReader, object>>(Expression.Block(new[] { oEntityVar }, lBlockExpressions), oReaderParam).Compile();
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    EntityCreators[typeof(T)] = oLazy;
+                    _EntityCreators[typeof(T)] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -427,9 +427,9 @@ namespace SQLiteORM
 
         internal static Func<object, object> CreateValueConverter(Type oTargetType)
         {
-            lock (ValueConvertersCacheLock)
+            lock (_ValueConvertersCacheLock)
             {
-                if (!ValueConvertersCache.TryGetValue(oTargetType, out var oLazy))
+                if (!_ValueConvertersCache.TryGetValue(oTargetType, out var oLazy))
                 {
                     oLazy = new Lazy<Func<object, object>>(() =>
                     {
@@ -444,7 +444,7 @@ namespace SQLiteORM
                         if (oUnderlyingType == typeof(string)) return oValue => oValue == null ? null : (object)oValue.ToString();
                         return oValue => oValue == null ? null : Convert.ChangeType(oValue, oUnderlyingType);
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    ValueConvertersCache[oTargetType] = oLazy;
+                    _ValueConvertersCache[oTargetType] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -466,12 +466,12 @@ namespace SQLiteORM
 
         internal static object GetTableLock(string sTableName)
         {
-            lock (TableLocksLock)
+            lock (_TableLocksLock)
             {
-                if (!TableLocks.TryGetValue(sTableName, out var oLock))
+                if (!_TableLocks.TryGetValue(sTableName, out var oLock))
                 {
                     oLock = new object();
-                    TableLocks[sTableName] = oLock;
+                    _TableLocks[sTableName] = oLock;
                 }
                 return oLock;
             }

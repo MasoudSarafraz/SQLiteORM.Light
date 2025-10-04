@@ -19,38 +19,38 @@ namespace SQLiteORM
 
     internal sealed class ExpressionToSql<T>
     {
-        private static readonly Dictionary<WeakReference, Lazy<SqlWithParameters>> _oCache = new Dictionary<WeakReference, Lazy<SqlWithParameters>>();
-        private static readonly object _oCacheLock = new object();
-        private const int MaxCacheSize = 1000;
-        private static int _iCacheCount = 0;
-        private static readonly Dictionary<MemberExpression, Lazy<Func<object>>> _oMemberCache = new Dictionary<MemberExpression, Lazy<Func<object>>>();
-        private static readonly object _oMemberCacheLock = new object();
-        private static readonly Dictionary<MethodInfo, Lazy<string>> _oMethodCache = new Dictionary<MethodInfo, Lazy<string>>();
-        private static readonly object _oMethodCacheLock = new object();
-        private static readonly Dictionary<Type, Lazy<Func<object, string>>> _oValueFormatterCache = new Dictionary<Type, Lazy<Func<object, string>>>();
-        private static readonly object _oValueFormatterCacheLock = new object();
-        private int _iParamIndex = 0;
+        private static readonly Dictionary<WeakReference, Lazy<SqlWithParameters>> _Cache = new Dictionary<WeakReference, Lazy<SqlWithParameters>>();
+        private static readonly object _CacheLock = new object();
+        private const int _MaxCacheSize = 1000;
+        private static int _CacheCount = 0;
+        private static readonly Dictionary<MemberExpression, Lazy<Func<object>>> _MemberCache = new Dictionary<MemberExpression, Lazy<Func<object>>>();
+        private static readonly object _MemberCacheLock = new object();
+        private static readonly Dictionary<MethodInfo, Lazy<string>> _MethodCache = new Dictionary<MethodInfo, Lazy<string>>();
+        private static readonly object _MethodCacheLock = new object();
+        private static readonly Dictionary<Type, Lazy<Func<object, string>>> _ValueFormatterCache = new Dictionary<Type, Lazy<Func<object, string>>>();
+        private static readonly object _ValueFormatterCacheLock = new object();
+        private int _ParamIndex = 0;
 
         public SqlWithParameters ConvertToSqlWithParameters(Expression<Func<T, bool>> oExpression)
         {
             if (oExpression == null) return new SqlWithParameters { Sql = "1=1" };
             var oExprBody = oExpression.Body;
-            lock (_oCacheLock)
+            lock (_CacheLock)
             {
                 SqlWithParameters oResult = null;
-                foreach (var oKvp in _oCache)
+                foreach (var oKvp in _Cache)
                 {
                     if (oKvp.Key.IsAlive && oKvp.Key.Target == oExprBody) { oResult = oKvp.Value.Value; break; }
                 }
                 if (oResult == null)
                 {
                     CheckCacheSize();
-                    _iParamIndex = 0;
+                    _ParamIndex = 0;
                     var oNewResult = new SqlWithParameters();
                     oNewResult.Sql = Visit(oExprBody, oNewResult);
                     var oNewWeakRef = new WeakReference(oExprBody);
-                    _oCache[oNewWeakRef] = new Lazy<SqlWithParameters>(() => oNewResult, LazyThreadSafetyMode.ExecutionAndPublication);
-                    Interlocked.Increment(ref _iCacheCount);
+                    _Cache[oNewWeakRef] = new Lazy<SqlWithParameters>(() => oNewResult, LazyThreadSafetyMode.ExecutionAndPublication);
+                    Interlocked.Increment(ref _CacheCount);
                     return oNewResult;
                 }
                 else return oResult;
@@ -59,22 +59,22 @@ namespace SQLiteORM
 
         private void CheckCacheSize()
         {
-            if (_iCacheCount >= MaxCacheSize)
+            if (_CacheCount >= _MaxCacheSize)
             {
-                lock (_oCacheLock)
+                lock (_CacheLock)
                 {
-                    if (_iCacheCount >= MaxCacheSize)
+                    if (_CacheCount >= _MaxCacheSize)
                     {
-                        var lKeysToRemove = new List<WeakReference>(MaxCacheSize / 4);
-                        foreach (var oKvp in _oCache)
+                        var lKeysToRemove = new List<WeakReference>(_MaxCacheSize / 4);
+                        foreach (var oKvp in _Cache)
                         {
                             if (!oKvp.Key.IsAlive) lKeysToRemove.Add(oKvp.Key);
                         }
                         for (int i = 0; i < lKeysToRemove.Count; i++)
                         {
-                            _oCache.Remove(lKeysToRemove[i]); Interlocked.Decrement(ref _iCacheCount);
+                            _Cache.Remove(lKeysToRemove[i]); Interlocked.Decrement(ref _CacheCount);
                         }
-                        if (_iCacheCount >= MaxCacheSize) { _oCache.Clear(); _iCacheCount = 0; }
+                        if (_CacheCount >= _MaxCacheSize) { _Cache.Clear(); _CacheCount = 0; }
                     }
                 }
             }
@@ -205,12 +205,12 @@ namespace SQLiteORM
 
         private Func<object> GetCompiledMemberExpression(MemberExpression oNode)
         {
-            lock (_oMemberCacheLock)
+            lock (_MemberCacheLock)
             {
-                if (!_oMemberCache.TryGetValue(oNode, out Lazy<Func<object>> oLazy))
+                if (!_MemberCache.TryGetValue(oNode, out Lazy<Func<object>> oLazy))
                 {
                     oLazy = new Lazy<Func<object>>(() => Expression.Lambda<Func<object>>(Expression.Convert(oNode, typeof(object))).Compile(), LazyThreadSafetyMode.ExecutionAndPublication);
-                    _oMemberCache[oNode] = oLazy;
+                    _MemberCache[oNode] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -233,7 +233,7 @@ namespace SQLiteORM
                 oSb.Append(')');
                 return oSb.ToString();
             }
-            string sParamName = $"@p{_iParamIndex++}";
+            string sParamName = $"@p{_ParamIndex++}";
             oResult.Parameters[sParamName] = oExpr.Value;
             return sParamName;
         }
@@ -247,9 +247,9 @@ namespace SQLiteORM
 
         private Func<object, string> GetValueFormatter(Type oType)
         {
-            lock (_oValueFormatterCacheLock)
+            lock (_ValueFormatterCacheLock)
             {
-                if (!_oValueFormatterCache.TryGetValue(oType, out Lazy<Func<object, string>> oLazy))
+                if (!_ValueFormatterCache.TryGetValue(oType, out Lazy<Func<object, string>> oLazy))
                 {
                     oLazy = new Lazy<Func<object, string>>(() =>
                     {
@@ -262,7 +262,7 @@ namespace SQLiteORM
                         if (typeof(IFormattable).IsAssignableFrom(oType)) return oVal => ((IFormattable)oVal).ToString(null, CultureInfo.InvariantCulture);
                         return oVal => oVal.ToString();
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    _oValueFormatterCache[oType] = oLazy;
+                    _ValueFormatterCache[oType] = oLazy;
                 }
                 return oLazy.Value;
             }
@@ -338,9 +338,9 @@ namespace SQLiteORM
 
         private string GetCachedMethod(MethodInfo oMethod)
         {
-            lock (_oMethodCacheLock)
+            lock (_MethodCacheLock)
             {
-                if (!_oMethodCache.TryGetValue(oMethod, out Lazy<string> oLazy))
+                if (!_MethodCache.TryGetValue(oMethod, out Lazy<string> oLazy))
                 {
                     oLazy = new Lazy<string>(() =>
                     {
@@ -351,7 +351,7 @@ namespace SQLiteORM
                         }
                         return null;
                     }, LazyThreadSafetyMode.ExecutionAndPublication);
-                    _oMethodCache[oMethod] = oLazy;
+                    _MethodCache[oMethod] = oLazy;
                 }
                 return oLazy.Value;
             }
